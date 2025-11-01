@@ -4,6 +4,7 @@ use crate::octree::NodeId;
 
 #[derive(Clone, Debug, Default)]
 pub struct OctreeNodeSnapshot {
+    pub parent_id: Option<NodeId>,
     pub id: Option<NodeId>,
     pub index: usize,
     pub name: String,
@@ -23,6 +24,7 @@ pub struct OctreeNodeSnapshot {
 impl From<&OctreeNode> for OctreeNodeSnapshot {
     fn from(node: &OctreeNode) -> Self {
         Self {
+            parent_id: node.parent,
             id: node.id,
             // unknown index, defaults to 0
             index: 0,

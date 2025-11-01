@@ -6,7 +6,7 @@ pub async fn main() {
 
     tracing::info!("Load pointcloud from local filesystem");
     let mut point_cloud =
-        PotreePointCloud::from_url("file://assets/heidentor", ResourceLoader::new())
+        Hierarchy::from_url("file://assets/heidentor", ResourceLoader::new())
             .await
             .expect("Unable to load point cloud");
 

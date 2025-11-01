@@ -47,7 +47,7 @@ pub fn main() {
                 log("Hello from spawned local!");
 
                 tracing::info!("Load pointcloud from local filesystem");
-                let mut point_cloud = PotreePointCloud::from_url(
+                let mut point_cloud = Hierarchy::from_url(
                     "http://localhost:8080/assets/heidentor",
                     resource_loader,
                 )

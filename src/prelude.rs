@@ -1,9 +1,9 @@
-pub use crate::resource::ResourceLoader;
-pub use crate::point_cloud::PotreePointCloud;
+pub use crate::hierarchy::Hierarchy;
 pub use crate::octree::snapshot::OctreeNodeSnapshot;
 pub use crate::point::PointData;
+pub use crate::resource::ResourceLoader;
 
 // Error types
-pub use crate::point_cloud::LoadPotreePointCloudError;
-pub use crate::point_cloud::ReadHierarchyError;
-pub use crate::point_cloud::LoadPointsError;
+pub use crate::hierarchy::LoadPotreePointCloudError;
+pub use crate::hierarchy::ReadHierarchyError;
+pub use crate::metadata::LoadPointsError;

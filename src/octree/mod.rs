@@ -1,5 +1,5 @@
-pub mod node;
 pub mod aabb;
+pub mod node;
 pub mod snapshot;
 
 pub mod point_attributes;
@@ -8,7 +8,7 @@ use std::fmt::Display;
 
 use slab::Slab;
 
-#[derive(Clone, Debug, Copy, Default)]
+#[derive(Clone, Debug, Copy, Default, Hash, Ord, PartialOrd, Eq, PartialEq)]
 pub struct NodeId(pub(crate) usize);
 
 impl Display for NodeId {
