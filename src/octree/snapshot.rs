@@ -7,6 +7,8 @@ pub struct OctreeNodeSnapshot {
     pub parent_id: Option<NodeId>,
     pub id: Option<NodeId>,
     pub index: usize,
+    // the child index from the parent's view (valid only for non root)
+    pub child_index: usize,
     pub name: String,
     pub bounding_box: Aabb,
     pub spacing: f64,
@@ -28,6 +30,7 @@ impl From<&OctreeNode> for OctreeNodeSnapshot {
             id: node.id,
             // unknown index, defaults to 0
             index: 0,
+            child_index: node.child_index,
             name: node.name.clone(),
             bounding_box: node.bounding_box.clone(),
             spacing: node.spacing,

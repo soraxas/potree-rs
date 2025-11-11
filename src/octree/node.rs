@@ -4,6 +4,7 @@ use super::aabb::Aabb;
 #[derive(Clone, Debug, Default)]
 pub struct OctreeNode {
     pub name: String,
+    pub child_index: usize,
     pub bounding_box: Aabb,
     pub spacing: f64,
     pub level: u32,
@@ -20,7 +21,33 @@ pub struct OctreeNode {
     // The node's parent id. None means it's the root node.
     pub parent: Option<NodeId>,
 
-    // Children node ids. A node does not always have 8 children.
-    // If it's empty, it means either it's a leaf, or the children have not been loaded.
-    pub children: Vec<NodeId>,
+    // Preallocated children array
+    pub children: [NodeId; 8],
+    // children mask: 1 is occupied, 0 is vacant
+    pub children_mask: u8,
+}
+
+pub trait U8BitExt {
+    fn iter_zero_bits(self) -> impl Iterator<Item = usize>;
+
+    fn iter_one_bits(self) -> impl Iterator<Item = usize>;
+}
+
+impl U8BitExt for u8 {
+    fn iter_zero_bits(self) -> impl Iterator<Item = usize> {
+        (0..8).filter(move |&i| (self & (1 << i)) == 0)
+    }
+
+    fn iter_one_bits(self) -> impl Iterator<Item = usize> {
+        (0..8).filter(move |&i| (self & (1 << i)) != 0)
+    }
+}
+
+
+pub fn iter_zero_bits(mask: u8) -> impl Iterator<Item = usize> {
+    (0..8).filter(move |&i| (mask & (1 << i)) == 0)
+}
+
+pub fn iter_one_bits(mask: u8) -> impl Iterator<Item = usize> {
+    (0..8).filter(move |&i| (mask & (1 << i)) != 0)
 }

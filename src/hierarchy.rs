@@ -1,12 +1,12 @@
 use crate::metadata::{LoadPointsError, Metadata};
 use crate::octree::aabb::create_child_aabb;
-use crate::octree::node::OctreeNode;
+use crate::octree::node::{iter_one_bits, OctreeNode, U8BitExt};
 use crate::octree::snapshot::OctreeNodeSnapshot;
 use crate::octree::{FlatOctree, NodeId};
 use crate::point::PointData;
 use crate::resource::{ResourceError, ResourceLoader};
-use binrw::BinReaderExt;
 use binrw::prelude::*;
+use binrw::BinReaderExt;
 use std::io::{Cursor, Read};
 use thiserror::Error;
 
@@ -125,7 +125,8 @@ impl Hierarchy {
         let root = self.octree.root();
         let children = root.children.clone();
 
-        for child in children {
+        for i in iter_one_bits(root.children_mask) {
+            let child = children[i];
             self.parse_entire_hierarchy(child).await?;
         }
 
@@ -144,7 +145,8 @@ impl Hierarchy {
         let children = node.children.clone();
 
         // load children hierarchy
-        for child in children {
+        for i in iter_one_bits(node.children_mask) {
+            let child = children[i];
             Box::pin(self.parse_entire_hierarchy(child)).await?;
         }
 
@@ -208,7 +210,7 @@ impl Hierarchy {
                 continue;
             }
 
-            let mut children = Vec::with_capacity(8);
+            let mut children: [NodeId; 8] = [NodeId::default(); 8];
 
             // clone/copy just what we need
             let (current_name, current_bounding_box, current_spacing, current_level) = (
@@ -237,8 +239,9 @@ impl Hierarchy {
                 child.spacing = current_spacing / 2.0;
                 child.level = current_level + 1;
                 child.parent = Some(current_id);
+                child.child_index = child_index;
 
-                children.push(child_id);
+                children[child_index] = child_id;
 
                 // increment node_pos for the next child
                 node_pos += 1;
@@ -247,6 +250,7 @@ impl Hierarchy {
             // finally, append the children to the parent
             let current = self.octree.node_mut(current_id).unwrap();
             current.children = children;
+            current.children_mask = header.child_mask;
         }
 
         Ok(())
@@ -266,7 +270,9 @@ impl Hierarchy {
             let current_index = nodes.len();
 
             // process children
-            for child in &node.children {
+            for i in iter_one_bits(node.children_mask) {
+                let child = &node.children[i];
+
                 let child = self
                     .octree
                     .node(*child)
