@@ -19,8 +19,8 @@ pub struct OctreeNodeSnapshot {
     pub byte_size: u64,
     pub hierarchy_byte_offset: u64,
     pub hierarchy_byte_size: u64,
-    // an index of 0 means child does not exist
     pub children: [usize; 8],
+    pub children_mask: u8,
 }
 
 impl From<&OctreeNode> for OctreeNodeSnapshot {
@@ -43,6 +43,7 @@ impl From<&OctreeNode> for OctreeNodeSnapshot {
             hierarchy_byte_size: node.hierarchy_byte_size,
             // fill with no children
             children: [0; 8],
+            children_mask: 0u8,
         }
     }
 }

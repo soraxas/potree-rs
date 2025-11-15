@@ -1,3 +1,4 @@
+use std::cmp::max;
 use potree::prelude::*;
 
 #[tokio::main(flavor = "current_thread")]
@@ -32,5 +33,19 @@ pub async fn main() {
         .await
         .expect("Unable to load points");
 
-    tracing::info!("Loaded {} points", points.len());
+    tracing::info!("Loaded {} points with occupancy {}", points.points.len(), points.density);
+
+    let mut max_density = 0;
+    for node in full_snapshot {
+        let points = point_cloud
+            .load_points(node.id.unwrap())
+            .await
+            .expect("Unable to load points");
+        if points.density > max_density {
+            max_density = points.density;
+        }
+    }
+
+    tracing::info!("Max density: {}", max_density);
+
 }

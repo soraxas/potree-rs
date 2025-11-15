@@ -3,10 +3,21 @@ use crate::octree::aabb::Aabb;
 use crate::octree::node::OctreeNode;
 use crate::point::PointData;
 use crate::resource::{ResourceError, ResourceLoader};
-use glam::{DVec3, U8Vec3};
+use glam::{DVec3, IVec3, U8Vec3, UVec3};
 use serde::Deserialize;
 use std::io::{Cursor, Read};
+use std::ops::Sub;
 use thiserror::Error;
+
+const GRID_SIZE: f64 = 32.0;
+const GRID_SIZE_UINT: u32 = GRID_SIZE as u32;
+const GRID_SIZE_SPLAT: UVec3 = UVec3::splat(GRID_SIZE as u32 - 1);
+
+
+pub struct Points {
+    pub points: Vec<PointData>,
+    pub density: u32,
+}
 
 #[derive(Error, Debug)]
 pub enum LoadPointsError {
@@ -110,7 +121,7 @@ impl Metadata {
         node: &OctreeNode,
         octree_url: &str,
         resource_loader: &ResourceLoader,
-    ) -> Result<Vec<PointData>, LoadPointsError> {
+    ) -> Result<Points, LoadPointsError> {
         let buffer = resource_loader
             .get_range(octree_url, node.byte_offset, node.byte_size as usize, None)
             .await?;
@@ -131,15 +142,19 @@ impl Metadata {
         &self,
         node: &OctreeNode,
         buffer: &[u8],
-    ) -> Result<Vec<PointData>, LoadPointsError> {
+    ) -> Result<Points, LoadPointsError> {
         let mut cursor = Cursor::new(buffer);
         let mut input = brotli_decompressor::Decompressor::new(&mut cursor, 4096);
         let mut decompressed_buffer = Vec::new();
-        let size = input.read_to_end(&mut decompressed_buffer)?;
+        input.read_to_end(&mut decompressed_buffer)?;
 
         let mut byte_offset: usize = 0;
 
         let mut points = vec![PointData::default(); node.num_points as usize];
+
+        let size = node.bounding_box.max.sub(node.bounding_box.min);
+        let mut grid = vec![0_u32; (GRID_SIZE_UINT * GRID_SIZE_UINT * GRID_SIZE_UINT) as usize];
+        let mut num_occupied_cells = 0;
 
         for point_attribute in &self.attributes {
             let point_data = PointData::default();
@@ -154,12 +169,19 @@ impl Metadata {
                         let bytes = &decompressed_buffer[byte_offset..byte_offset + 16];
                         let (x, y, z) = read_morton_128(bytes);
 
-                        points[j as usize].position = node.bounding_box.min
-                            + DVec3::new(
-                                x as f64 * scale[0] + offset[0] - node.bounding_box.min.x,
-                                y as f64 * scale[1] + offset[1] - node.bounding_box.min.y,
-                                z as f64 * scale[2] + offset[2] - node.bounding_box.min.z,
-                            );
+                        let position = DVec3::new(
+                            x as f64 * scale[0] + offset[0] - node.bounding_box.min.x,
+                            y as f64 * scale[1] + offset[1] - node.bounding_box.min.y,
+                            z as f64 * scale[2] + offset[2] - node.bounding_box.min.z,
+                        );
+
+                        let index = to_index(&position, &size);
+                        grid[index] += 1;
+                        if grid[index] == 1 {
+                            num_occupied_cells += 1;
+                        }
+
+                        points[j as usize].position = position + node.bounding_box.min;
 
                         byte_offset += 16;
                     }
@@ -191,8 +213,16 @@ impl Metadata {
 
         // println!("Final offset: {}, size: {}", byte_offset, size);
 
-        Ok(points)
+        Ok(Points {
+            points,
+            density: node.num_points / num_occupied_cells,
+        })
     }
+}
+
+fn to_index(position: &DVec3, size: &DVec3) -> usize {
+    let index = (GRID_SIZE * position / size).as_uvec3().min(GRID_SIZE_SPLAT);
+    (index.x + GRID_SIZE_UINT * index.y + GRID_SIZE_UINT * GRID_SIZE_UINT * index.z) as usize
 }
 
 impl Into<Aabb> for BoundingBox {

@@ -1,4 +1,4 @@
-use crate::metadata::{LoadPointsError, Metadata};
+use crate::metadata::{LoadPointsError, Metadata, Points};
 use crate::octree::aabb::create_child_aabb;
 use crate::octree::node::{iter_one_bits, OctreeNode, U8BitExt};
 use crate::octree::snapshot::OctreeNodeSnapshot;
@@ -301,7 +301,7 @@ impl Hierarchy {
     }
 
     // Functions to load points
-    pub async fn load_points(&self, node_id: NodeId) -> Result<Vec<PointData>, LoadPointsError> {
+    pub async fn load_points(&self, node_id: NodeId) -> Result<Points, LoadPointsError> {
         let node = self
             .octree
             .node(node_id)
