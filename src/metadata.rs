@@ -1,4 +1,4 @@
-use crate::morton::{read_morton_128, read_morton_64};
+use crate::morton::{read_morton_64, read_morton_128};
 use crate::octree::aabb::Aabb;
 use crate::octree::node::OctreeNode;
 use crate::point::PointData;
@@ -221,7 +221,11 @@ impl Metadata {
 
         Ok(Points {
             points,
-            density: node.num_points / num_occupied_cells,
+            density: if num_occupied_cells == 0 {
+                0
+            } else {
+                node.num_points / num_occupied_cells
+            },
         })
     }
 
