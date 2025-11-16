@@ -3,7 +3,8 @@ use crate::octree::aabb::Aabb;
 use crate::octree::node::OctreeNode;
 use crate::point::PointData;
 use crate::resource::{ResourceError, ResourceLoader};
-use glam::{DVec3, IVec3, U8Vec3, UVec3};
+use byteorder::{ByteOrder, LittleEndian};
+use glam::{DVec3, U8Vec3, UVec3};
 use serde::Deserialize;
 use std::io::{Cursor, Read};
 use std::ops::Sub;
@@ -12,7 +13,6 @@ use thiserror::Error;
 const GRID_SIZE: f64 = 32.0;
 const GRID_SIZE_UINT: u32 = GRID_SIZE as u32;
 const GRID_SIZE_SPLAT: UVec3 = UVec3::splat(GRID_SIZE as u32 - 1);
-
 
 pub struct Points {
     pub points: Vec<PointData>,
@@ -96,8 +96,11 @@ pub enum AttributeType {
 pub struct AttributeMetadata {
     pub name: String,
     pub description: String,
+    /// usually contains total size of a point attribute (`num_elements * element_size`)
     pub size: u16,
+    /// number of elements in the attribute
     pub num_elements: u16,
+    /// contains a single element size
     pub element_size: u16,
     pub r#type: AttributeType,
     pub min: Vec<f32>,
@@ -128,6 +131,7 @@ impl Metadata {
 
         let points = match self.encoding.as_str() {
             "BROTLI" => self.parse_points_brotli(node, &buffer)?,
+            "DEFAULT" => self.parse_points_default(node, &buffer)?,
             _ => {
                 return Err(LoadPointsError::EncodingUnimplemented(
                     self.encoding.clone(),
@@ -136,6 +140,89 @@ impl Metadata {
         };
 
         Ok(points)
+    }
+
+    fn parse_points_default(
+        &self,
+        node: &OctreeNode,
+        buffer: &[u8],
+    ) -> Result<Points, LoadPointsError> {
+        let mut points = vec![PointData::default(); node.num_points as usize];
+
+        let size = node.bounding_box.max.sub(node.bounding_box.min);
+        let mut grid = vec![0_u32; (GRID_SIZE_UINT * GRID_SIZE_UINT * GRID_SIZE_UINT) as usize];
+        let mut num_occupied_cells = 0;
+
+        // compute bytes per point
+        let mut bytes_per_point = 0;
+        for point_attribute in &self.attributes {
+            bytes_per_point += point_attribute.size as u32;
+        }
+
+        let mut attribute_offset: usize = 0;
+
+        for point_attribute in &self.attributes {
+            let attribute_size = point_attribute.size as usize;
+            let element_size = point_attribute.element_size as usize;
+
+            match point_attribute.name.as_str() {
+                "POSITION_CARTESIAN" | "position" => {
+                    let scale = &self.scale;
+                    let offset = &self.offset;
+
+                    for j in 0..node.num_points {
+                        let point_offset = (j * bytes_per_point) as usize;
+                        let bytes = &buffer[(point_offset + attribute_offset)
+                            ..(point_offset + attribute_offset + attribute_size)];
+
+                        let x = LittleEndian::read_u32(&bytes[0..element_size]);
+                        let y = LittleEndian::read_u32(&bytes[element_size..2 * element_size]);
+                        let z = LittleEndian::read_u32(&bytes[2 * element_size..3 * element_size]);
+
+                        let position = DVec3::new(
+                            x as f64 * scale[0] + offset[0] - node.bounding_box.min.x,
+                            y as f64 * scale[1] + offset[1] - node.bounding_box.min.y,
+                            z as f64 * scale[2] + offset[2] - node.bounding_box.min.z,
+                        );
+
+                        let index = to_index(&position, &size);
+                        grid[index] += 1;
+                        if grid[index] == 1 {
+                            num_occupied_cells += 1;
+                        }
+
+                        points[j as usize].position = position + node.bounding_box.min;
+                    }
+                }
+                "RGBA" | "rgba" | "RGB" | "rgb" => {
+                    for j in 0..node.num_points {
+                        let point_offset = (j * bytes_per_point) as usize;
+                        let bytes = &buffer[(point_offset + attribute_offset)
+                            ..(point_offset + attribute_offset + attribute_size)];
+
+                        let r = LittleEndian::read_u16(&bytes[0..element_size]);
+                        let g = LittleEndian::read_u16(&bytes[element_size..2 * element_size]);
+                        let b = LittleEndian::read_u16(&bytes[2 * element_size..3 * element_size]);
+
+                        points[j as usize].color = U8Vec3::new(
+                            if r > 255 { r / 256 } else { r } as u8,
+                            if g > 255 { g / 256 } else { g } as u8,
+                            if b > 255 { b / 256 } else { b } as u8,
+                        );
+                    }
+                }
+                _ => {}
+            }
+
+            attribute_offset += attribute_size;
+        }
+
+        // println!("Final offset: {}, size: {}", byte_offset, size);
+
+        Ok(Points {
+            points,
+            density: node.num_points / num_occupied_cells,
+        })
     }
 
     fn parse_points_brotli(
@@ -157,9 +244,6 @@ impl Metadata {
         let mut num_occupied_cells = 0;
 
         for point_attribute in &self.attributes {
-            let point_data = PointData::default();
-            points.push(point_data);
-
             match point_attribute.name.as_str() {
                 "POSITION_CARTESIAN" | "position" => {
                     let scale = &self.scale;
@@ -221,7 +305,9 @@ impl Metadata {
 }
 
 fn to_index(position: &DVec3, size: &DVec3) -> usize {
-    let index = (GRID_SIZE * position / size).as_uvec3().min(GRID_SIZE_SPLAT);
+    let index = (GRID_SIZE * position / size)
+        .as_uvec3()
+        .min(GRID_SIZE_SPLAT);
     (index.x + GRID_SIZE_UINT * index.y + GRID_SIZE_UINT * GRID_SIZE_UINT * index.z) as usize
 }
 
