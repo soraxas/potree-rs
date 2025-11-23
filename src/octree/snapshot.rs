@@ -1,5 +1,5 @@
 use crate::octree::aabb::Aabb;
-use crate::octree::node::OctreeNode;
+use crate::octree::node::{NodeType, OctreeNode};
 use crate::octree::NodeId;
 
 #[derive(Clone, Debug, Default)]
@@ -13,7 +13,7 @@ pub struct OctreeNodeSnapshot {
     pub bounding_box: Aabb,
     pub spacing: f64,
     pub level: u32,
-    pub node_type: u8,
+    pub node_type: NodeType,
     pub num_points: u32,
     pub byte_offset: u64,
     pub byte_size: u64,

@@ -5,9 +5,12 @@ use potree::prelude::*;
 pub async fn main() {
     tracing_subscriber::fmt::init();
 
+    let url: &str = "file://assets/heidentor";
+    // let url: &str = "file:///home/romain/Documents/Potree/Liban";
+
     tracing::info!("Load pointcloud from local filesystem");
     let mut point_cloud =
-        Hierarchy::from_url("file://assets/heidentor", ResourceLoader::new())
+        Hierarchy::from_url(url, ResourceLoader::new())
             .await
             .expect("Unable to load point cloud");
 
@@ -35,17 +38,17 @@ pub async fn main() {
 
     tracing::info!("Loaded {} points with occupancy {}", points.points.len(), points.density);
 
-    let mut max_density = 0;
-    for node in full_snapshot {
-        let points = point_cloud
-            .load_points(node.id.unwrap())
-            .await
-            .expect("Unable to load points");
-        if points.density > max_density {
-            max_density = points.density;
-        }
-    }
-
-    tracing::info!("Max density: {}", max_density);
+    // let mut max_density = 0;
+    // for node in full_snapshot {
+    //     let points = point_cloud
+    //         .load_points(node.id.unwrap())
+    //         .await
+    //         .expect("Unable to load points");
+    //     if points.density > max_density {
+    //         max_density = points.density;
+    //     }
+    // }
+    //
+    // tracing::info!("Max density: {}", max_density);
 
 }

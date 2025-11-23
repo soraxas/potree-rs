@@ -1,6 +1,6 @@
 use crate::morton::{read_morton_64, read_morton_128};
 use crate::octree::aabb::Aabb;
-use crate::octree::node::OctreeNode;
+use crate::octree::node::{FlatOctreeNode, NodeType, OctreeNode};
 use crate::point::PointData;
 use crate::resource::{ResourceError, ResourceLoader};
 use byteorder::{ByteOrder, LittleEndian};
@@ -113,7 +113,18 @@ impl Metadata {
             name: "r".to_string(),
             bounding_box: self.bounding_box.clone().into(),
             spacing: self.spacing,
-            node_type: 2,
+            node_type: NodeType::Proxy,
+            hierarchy_byte_size: self.hierarchy.first_chunk_size,
+            ..Default::default()
+        }
+    }
+
+    pub(crate) fn create_flat_root_node(&self) -> FlatOctreeNode {
+        FlatOctreeNode {
+            name: "r".to_string(),
+            bounding_box: self.bounding_box.clone().into(),
+            spacing: self.spacing,
+            node_type: NodeType::Proxy,
             hierarchy_byte_size: self.hierarchy.first_chunk_size,
             ..Default::default()
         }
@@ -129,9 +140,43 @@ impl Metadata {
             .get_range(octree_url, node.byte_offset, node.byte_size as usize, None)
             .await?;
 
+        let points = self.load_points(node.num_points, &node.bounding_box, &buffer)?;
+
+        Ok(points)
+    }
+
+    pub fn load_points(
+        &self,
+        num_points: u32,
+        bounding_box: &Aabb,
+        buffer: &[u8],
+    ) -> Result<Points, LoadPointsError> {
         let points = match self.encoding.as_str() {
-            "BROTLI" => self.parse_points_brotli(node, &buffer)?,
-            "DEFAULT" => self.parse_points_default(node, &buffer)?,
+            "BROTLI" => self.parse_points_brotli(num_points, bounding_box, buffer)?,
+            "DEFAULT" => self.parse_points_default(num_points, bounding_box, buffer)?,
+            _ => {
+                return Err(LoadPointsError::EncodingUnimplemented(
+                    self.encoding.clone(),
+                ));
+            }
+        };
+
+        Ok(points)
+    }
+
+    pub async fn load_points_for_flat_node(
+        &self,
+        node: &FlatOctreeNode,
+        octree_url: &str,
+        resource_loader: &ResourceLoader,
+    ) -> Result<Points, LoadPointsError> {
+        let buffer = resource_loader
+            .get_range(octree_url, node.byte_offset, node.byte_size as usize, None)
+            .await?;
+
+        let points = match self.encoding.as_str() {
+            "BROTLI" => self.parse_points_brotli(node.num_points, &node.bounding_box, &buffer)?,
+            "DEFAULT" => self.parse_points_default(node.num_points, &node.bounding_box, &buffer)?,
             _ => {
                 return Err(LoadPointsError::EncodingUnimplemented(
                     self.encoding.clone(),
@@ -144,12 +189,13 @@ impl Metadata {
 
     fn parse_points_default(
         &self,
-        node: &OctreeNode,
+        num_points: u32,
+        bounding_box: &Aabb,
         buffer: &[u8],
     ) -> Result<Points, LoadPointsError> {
-        let mut points = vec![PointData::default(); node.num_points as usize];
+        let mut points = vec![PointData::default(); num_points as usize];
 
-        let size = node.bounding_box.max.sub(node.bounding_box.min);
+        let size = bounding_box.max.sub(bounding_box.min);
         let mut grid = vec![0_u32; (GRID_SIZE_UINT * GRID_SIZE_UINT * GRID_SIZE_UINT) as usize];
         let mut num_occupied_cells = 0;
 
@@ -170,7 +216,7 @@ impl Metadata {
                     let scale = &self.scale;
                     let offset = &self.offset;
 
-                    for j in 0..node.num_points {
+                    for j in 0..num_points {
                         let point_offset = (j * bytes_per_point) as usize;
                         let bytes = &buffer[(point_offset + attribute_offset)
                             ..(point_offset + attribute_offset + attribute_size)];
@@ -180,9 +226,9 @@ impl Metadata {
                         let z = LittleEndian::read_u32(&bytes[2 * element_size..3 * element_size]);
 
                         let position = DVec3::new(
-                            x as f64 * scale[0] + offset[0] - node.bounding_box.min.x,
-                            y as f64 * scale[1] + offset[1] - node.bounding_box.min.y,
-                            z as f64 * scale[2] + offset[2] - node.bounding_box.min.z,
+                            x as f64 * scale[0] + offset[0] - bounding_box.min.x,
+                            y as f64 * scale[1] + offset[1] - bounding_box.min.y,
+                            z as f64 * scale[2] + offset[2] - bounding_box.min.z,
                         );
 
                         let index = to_index(&position, &size);
@@ -191,11 +237,11 @@ impl Metadata {
                             num_occupied_cells += 1;
                         }
 
-                        points[j as usize].position = position + node.bounding_box.min;
+                        points[j as usize].position = position + bounding_box.min;
                     }
                 }
                 "RGBA" | "rgba" | "RGB" | "rgb" => {
-                    for j in 0..node.num_points {
+                    for j in 0..num_points {
                         let point_offset = (j * bytes_per_point) as usize;
                         let bytes = &buffer[(point_offset + attribute_offset)
                             ..(point_offset + attribute_offset + attribute_size)];
@@ -224,14 +270,15 @@ impl Metadata {
             density: if num_occupied_cells == 0 {
                 0
             } else {
-                node.num_points / num_occupied_cells
+                num_points / num_occupied_cells
             },
         })
     }
 
     fn parse_points_brotli(
         &self,
-        node: &OctreeNode,
+        num_points: u32,
+        bounding_box: &Aabb,
         buffer: &[u8],
     ) -> Result<Points, LoadPointsError> {
         let mut cursor = Cursor::new(buffer);
@@ -241,9 +288,9 @@ impl Metadata {
 
         let mut byte_offset: usize = 0;
 
-        let mut points = vec![PointData::default(); node.num_points as usize];
+        let mut points = vec![PointData::default(); num_points as usize];
 
-        let size = node.bounding_box.max.sub(node.bounding_box.min);
+        let size = bounding_box.max.sub(bounding_box.min);
         let mut grid = vec![0_u32; (GRID_SIZE_UINT * GRID_SIZE_UINT * GRID_SIZE_UINT) as usize];
         let mut num_occupied_cells = 0;
 
@@ -253,14 +300,14 @@ impl Metadata {
                     let scale = &self.scale;
                     let offset = &self.offset;
 
-                    for j in 0..node.num_points {
+                    for j in 0..num_points {
                         let bytes = &decompressed_buffer[byte_offset..byte_offset + 16];
                         let (x, y, z) = read_morton_128(bytes);
 
                         let position = DVec3::new(
-                            x as f64 * scale[0] + offset[0] - node.bounding_box.min.x,
-                            y as f64 * scale[1] + offset[1] - node.bounding_box.min.y,
-                            z as f64 * scale[2] + offset[2] - node.bounding_box.min.z,
+                            x as f64 * scale[0] + offset[0] - bounding_box.min.x,
+                            y as f64 * scale[1] + offset[1] - bounding_box.min.y,
+                            z as f64 * scale[2] + offset[2] - bounding_box.min.z,
                         );
 
                         let index = to_index(&position, &size);
@@ -269,13 +316,13 @@ impl Metadata {
                             num_occupied_cells += 1;
                         }
 
-                        points[j as usize].position = position + node.bounding_box.min;
+                        points[j as usize].position = position + bounding_box.min;
 
                         byte_offset += 16;
                     }
                 }
                 "RGBA" | "rgba" | "RGB" | "rgb" => {
-                    for j in 0..node.num_points {
+                    for j in 0..num_points {
                         let bytes = &decompressed_buffer[byte_offset..byte_offset + 8];
                         let (r, g, b) = read_morton_64(bytes);
 
@@ -289,7 +336,7 @@ impl Metadata {
                     }
                 }
                 _ => {
-                    for j in 0..node.num_points {
+                    for j in 0..num_points {
                         let bytes = &decompressed_buffer
                             [byte_offset..byte_offset + point_attribute.size as usize];
 
@@ -303,7 +350,11 @@ impl Metadata {
 
         Ok(Points {
             points,
-            density: node.num_points / num_occupied_cells,
+            density: if num_occupied_cells == 0 {
+                0
+            } else {
+                num_points / num_occupied_cells
+            },
         })
     }
 }

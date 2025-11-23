@@ -1,4 +1,6 @@
 pub use crate::hierarchy::Hierarchy;
+pub use crate::flat_hierarchy::FlatHierarchy;
+
 pub use crate::octree::snapshot::OctreeNodeSnapshot;
 pub use crate::point::PointData;
 pub use crate::resource::ResourceLoader;

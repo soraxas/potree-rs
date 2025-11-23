@@ -1,6 +1,6 @@
 use crate::metadata::{LoadPointsError, Metadata, Points};
 use crate::octree::aabb::create_child_aabb;
-use crate::octree::node::{iter_one_bits, OctreeNode, U8BitExt};
+use crate::octree::node::{iter_one_bits, NodeType, OctreeNode, U8BitExt};
 use crate::octree::snapshot::OctreeNodeSnapshot;
 use crate::octree::{FlatOctree, NodeId};
 use crate::point::PointData;
@@ -38,6 +38,9 @@ pub enum ReadHierarchyError {
 
     #[error("Invalid binary data")]
     InvalidBinaryData(#[from] binrw::error::Error),
+
+    #[error("There is nothing to load because node is not a proxy")]
+    NothingToLoad,
 }
 
 #[derive(Clone, Debug)]
@@ -103,7 +106,7 @@ impl Hierarchy {
         // get the root node
         let node = self.octree.node(node_id).unwrap();
 
-        if node.node_type == 2 {
+        if matches!(node.node_type, NodeType::Proxy) {
             let data = self
                 .resource_loader
                 .get_range(
@@ -153,7 +156,7 @@ impl Hierarchy {
         Ok(())
     }
 
-    fn parse_hierarchy(&mut self, node_id: NodeId, buf: &[u8]) -> binrw::BinResult<()> {
+    fn parse_hierarchy(&mut self, node_id: NodeId, buf: &[u8]) -> Result<(), ReadHierarchyError> {
         const BYTES_PER_NODE: usize = 22;
         let mut cursor = Cursor::new(buf);
         let num_nodes = buf.len() / BYTES_PER_NODE;
@@ -183,7 +186,7 @@ impl Hierarchy {
 
             let header: HierarchyNodeEntry = cursor.read_le()?;
 
-            if current.node_type == 2 {
+            if matches!(current.node_type, NodeType::Proxy) {
                 current.byte_offset = header.byte_offset;
                 current.byte_size = header.byte_size;
                 current.num_points = header.num_points;
@@ -204,9 +207,10 @@ impl Hierarchy {
                 current.num_points = 0;
             }
 
-            current.node_type = header.r#type;
+            current.node_type = header.r#type.into();
 
-            if current.node_type == 2 {
+            if matches!(current.node_type, NodeType::Proxy) {
+                // the children are not yet known, no need to process them
                 continue;
             }
 
