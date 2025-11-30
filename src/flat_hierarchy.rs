@@ -196,6 +196,8 @@ pub fn parse_flat_hierarchy(
 
     // set first node
     nodes[0] = proxy_node.clone();
+    // remove the parent because it becomes the root
+    nodes[0].parent = None;
 
     // position of the next node to write in
     let mut node_pos = 1;
