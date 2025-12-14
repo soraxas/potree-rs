@@ -159,7 +159,7 @@ impl FlatHierarchy {
     }
 
     // Functions to load points
-    pub async fn load_points(&self, node: FlatOctreeNode) -> Result<Points, LoadPointsError> {
+    pub async fn load_points(&self, node: &FlatOctreeNode) -> Result<Points, LoadPointsError> {
         let buffer = self
             .resource_loader
             .get_range(
