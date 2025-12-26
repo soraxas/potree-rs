@@ -148,7 +148,7 @@ impl FlatHierarchy {
 
             // update child index in parent's children
             if let Some(parent) = node.parent {
-                nodes[parent].children[node.child_index] = next_index;
+                nodes[parent].children[node.child_index as usize] = next_index;
             }
 
             // add the node to the list of nodes
@@ -246,7 +246,7 @@ pub fn parse_flat_hierarchy(
             current.level,
         );
 
-        for child_index in 0..8 {
+        for child_index in 0_u8..8 {
             let child_exists = ((1 << child_index) & header.child_mask) != 0;
             if !child_exists {
                 continue;
@@ -263,7 +263,7 @@ pub fn parse_flat_hierarchy(
             child.parent = Some(i);
             child.child_index = child_index;
 
-            children[child_index] = node_pos;
+            children[child_index as usize] = node_pos;
 
             // increment node_pos for the next child
             node_pos += 1;

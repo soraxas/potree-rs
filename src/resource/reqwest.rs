@@ -2,6 +2,7 @@ use super::{ResourceClient, ResourceError};
 use async_trait::async_trait;
 use std::collections::BTreeMap;
 
+#[derive(Clone, Debug)]
 pub struct ReqwestClient {
     client: reqwest::Client,
 }

@@ -12,7 +12,7 @@ impl Aabb {
     }
 }
 
-pub fn create_child_aabb(aabb: &Aabb, index: usize) -> Aabb {
+pub fn create_child_aabb(aabb: &Aabb, index: u8) -> Aabb {
     let mut min = aabb.min;
     let mut max = aabb.max;
     let size = (max - min) * 0.5;

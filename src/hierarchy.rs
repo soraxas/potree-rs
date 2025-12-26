@@ -129,7 +129,7 @@ impl Hierarchy {
         let children = root.children.clone();
 
         for i in iter_one_bits(root.children_mask) {
-            let child = children[i];
+            let child = children[i as usize];
             self.parse_entire_hierarchy(child).await?;
         }
 
@@ -149,7 +149,7 @@ impl Hierarchy {
 
         // load children hierarchy
         for i in iter_one_bits(node.children_mask) {
-            let child = children[i];
+            let child = children[i as usize];
             Box::pin(self.parse_entire_hierarchy(child)).await?;
         }
 
@@ -224,7 +224,7 @@ impl Hierarchy {
                 current.level,
             );
 
-            for child_index in 0..8 {
+            for child_index in 0_u8..8 {
                 let child_exists = ((1 << child_index) & header.child_mask) != 0;
                 if !child_exists {
                     continue;
@@ -245,7 +245,7 @@ impl Hierarchy {
                 child.parent = Some(current_id);
                 child.child_index = child_index;
 
-                children[child_index] = child_id;
+                children[child_index as usize] = child_id;
 
                 // increment node_pos for the next child
                 node_pos += 1;
@@ -275,7 +275,7 @@ impl Hierarchy {
 
             // process children
             for i in iter_one_bits(node.children_mask) {
-                let child = &node.children[i];
+                let child = &node.children[i as usize];
 
                 let child = self
                     .octree

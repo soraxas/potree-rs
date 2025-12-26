@@ -48,7 +48,7 @@ impl Into<u8> for NodeType {
 #[derive(Clone, Debug, Default)]
 pub struct OctreeNode {
     pub name: String,
-    pub child_index: usize,
+    pub child_index: u8,
     pub bounding_box: Aabb,
     pub spacing: f64,
     pub level: u32,
@@ -74,7 +74,7 @@ pub struct OctreeNode {
 #[derive(Clone, Debug, Default)]
 pub struct FlatOctreeNode {
     pub name: String,
-    pub child_index: usize,
+    pub child_index: u8,
     pub bounding_box: Aabb,
     pub spacing: f64,
     pub level: u32,
@@ -118,6 +118,6 @@ pub fn iter_zero_bits(mask: u8) -> impl Iterator<Item = usize> {
     (0..8).filter(move |&i| (mask & (1 << i)) == 0)
 }
 
-pub fn iter_one_bits(mask: u8) -> impl Iterator<Item = usize> {
-    (0..8).filter(move |&i| (mask & (1 << i)) != 0)
+pub fn iter_one_bits(mask: u8) -> impl Iterator<Item = u8> {
+    (0_u8..8).filter(move |&i| (mask & (1 << i)) != 0)
 }

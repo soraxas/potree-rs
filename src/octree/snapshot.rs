@@ -8,7 +8,7 @@ pub struct OctreeNodeSnapshot {
     pub id: Option<NodeId>,
     pub index: usize,
     // the child index from the parent's view (valid only for non root)
-    pub child_index: usize,
+    pub child_index: u8,
     pub name: String,
     pub bounding_box: Aabb,
     pub spacing: f64,

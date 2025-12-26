@@ -13,7 +13,7 @@ required-features = ["fs"]
 
 [[example]]
 name = "read_native_flat"
-required-features = ["fs"]
+required-features = ["fs", "ehttp"]
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }

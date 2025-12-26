@@ -23,7 +23,7 @@ pub struct ResourceLoader {
     file: file::FileClient,
 
     #[cfg(all(feature = "reqwest", not(all(feature = "wasm", feature = "ehttp"))))]
-    http: reqwest::Client,
+    http: reqwest::ReqwestClient,
 
     #[cfg(all(feature = "ehttp", not(feature = "ehttp_local")))]
     http: ehttp::EhttpClient,
@@ -38,7 +38,7 @@ impl ResourceLoader {
             #[cfg(feature = "fs")]
             file: file::FileClient,
             #[cfg(all(feature = "reqwest", not(all(feature = "wasm", feature = "ehttp"))))]
-            http: reqwest::Client::new(),
+            http: reqwest::ReqwestClient::new(),
 
             #[cfg(all(feature = "ehttp", not(feature = "ehttp_local")))]
             http: ehttp::EhttpClient,
@@ -50,15 +50,16 @@ impl ResourceLoader {
     fn get_delegate(&'_ self, url: &str) -> Result<ErasedResourceClient<'_>, ResourceError> {
         if url.contains("://") {
             let parsed_url = Url::parse(url)?;
+            let scheme = parsed_url.scheme();
 
-            match parsed_url.scheme() {
+            match scheme {
                 #[cfg(any(feature = "ehttp", feature = "reqwest"))]
                 "http" | "https" => Ok(ErasedResourceClient::Http(&self.http)),
                 #[cfg(feature = "fs")]
                 "file" => Ok(ErasedResourceClient::File(&self.file)),
                 _ => Err(ResourceError::Unsupported(format!(
                     "Unknown scheme {}",
-                    url
+                    scheme
                 ))),
             }
         } else {
@@ -159,7 +160,7 @@ pub enum ErasedResourceClient<'a> {
     #[cfg(feature = "fs")]
     File(&'a file::FileClient),
     #[cfg(all(feature = "reqwest", not(all(feature = "wasm", feature = "ehttp"))))]
-    Http(&'a http::HttpClient),
+    Http(&'a reqwest::ReqwestClient),
     #[cfg(all(feature = "ehttp", not(feature = "ehttp_local")))]
     Http(&'a ehttp::EhttpClient),
     #[cfg(feature = "ehttp_local")]
