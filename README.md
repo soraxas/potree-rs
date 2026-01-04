@@ -53,7 +53,7 @@ Then, it loads the root node points.
 
 
 ```bash
-cargo run --features="fs" --example read_native_slab
+cargo run --features="fs tokio_dev" --example read_native_slab
 ```
 
 ## Build WASM example

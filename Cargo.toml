@@ -13,7 +13,7 @@ required-features = ["wasm_worker"]
 
 [[example]]
 name = "read_native_slab"
-required-features = ["fs"]
+required-features = ["fs", "tokio_dev"]
 
 [[example]]
 name = "read_native_fs"
