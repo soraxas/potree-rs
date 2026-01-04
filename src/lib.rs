@@ -1,9 +1,8 @@
-
-pub mod metadata;
 pub mod hierarchy;
-pub mod flat_hierarchy;
-pub mod resource;
-pub mod prelude;
+pub mod metadata;
+mod morton;
 pub mod octree;
 pub mod point;
-mod morton;
+pub mod point_cloud;
+pub mod prelude;
+pub mod resource;

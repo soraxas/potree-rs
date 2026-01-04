@@ -9,7 +9,9 @@ pub struct ReqwestClient {
 
 impl ReqwestClient {
     pub fn new() -> Self {
-        Self { client: reqwest::Client::new() }
+        Self {
+            client: reqwest::Client::new(),
+        }
     }
 }
 
@@ -26,11 +28,18 @@ impl ResourceClient for ReqwestClient {
                 req = req.header(k, v);
             }
         }
-        let resp = req.send().await.map_err(|e| ResourceError::Network(e.to_string()))?;
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| ResourceError::Network(e.to_string()))?;
         let status = resp.status().as_u16();
         if !(200..300).contains(&status) {
             return Err(ResourceError::Status(status));
         }
-        Ok(resp.bytes().await.map_err(|e| ResourceError::Network(e.to_string()))?.to_vec())
+        Ok(resp
+            .bytes()
+            .await
+            .map_err(|e| ResourceError::Network(e.to_string()))?
+            .to_vec())
     }
 }

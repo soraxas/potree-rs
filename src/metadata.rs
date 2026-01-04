@@ -1,6 +1,6 @@
-use crate::morton::{read_morton_64, read_morton_128};
+use crate::morton::{read_morton_128, read_morton_64};
 use crate::octree::aabb::Aabb;
-use crate::octree::node::{FlatOctreeNode, NodeType, OctreeNode};
+use crate::octree::node::{OctreeNode, NodeType};
 use crate::point::PointData;
 use crate::resource::{ResourceError, ResourceLoader};
 use byteorder::{ByteOrder, LittleEndian};
@@ -108,7 +108,7 @@ pub struct AttributeMetadata {
 }
 
 impl Metadata {
-    pub(crate) fn create_root_node(&self) -> OctreeNode {
+    pub(crate) fn create_flat_root_node(&self) -> OctreeNode {
         OctreeNode {
             name: "r".to_string(),
             bounding_box: self.bounding_box.clone().into(),
@@ -117,32 +117,6 @@ impl Metadata {
             hierarchy_byte_size: self.hierarchy.first_chunk_size,
             ..Default::default()
         }
-    }
-
-    pub(crate) fn create_flat_root_node(&self) -> FlatOctreeNode {
-        FlatOctreeNode {
-            name: "r".to_string(),
-            bounding_box: self.bounding_box.clone().into(),
-            spacing: self.spacing,
-            node_type: NodeType::Proxy,
-            hierarchy_byte_size: self.hierarchy.first_chunk_size,
-            ..Default::default()
-        }
-    }
-
-    pub async fn load_points_for_node(
-        &self,
-        node: &OctreeNode,
-        octree_url: &str,
-        resource_loader: &ResourceLoader,
-    ) -> Result<Points, LoadPointsError> {
-        let buffer = resource_loader
-            .get_range(octree_url, node.byte_offset, node.byte_size as usize, None)
-            .await?;
-
-        let points = self.load_points(node.num_points, &node.bounding_box, &buffer)?;
-
-        Ok(points)
     }
 
     pub fn load_points(
@@ -164,9 +138,9 @@ impl Metadata {
         Ok(points)
     }
 
-    pub async fn load_points_for_flat_node(
+    pub async fn load_points_for_node(
         &self,
-        node: &FlatOctreeNode,
+        node: &OctreeNode,
         octree_url: &str,
         resource_loader: &ResourceLoader,
     ) -> Result<Points, LoadPointsError> {
@@ -336,8 +310,8 @@ impl Metadata {
                     }
                 }
                 _ => {
-                    for j in 0..num_points {
-                        let bytes = &decompressed_buffer
+                    for _j in 0..num_points {
+                        let _bytes = &decompressed_buffer
                             [byte_offset..byte_offset + point_attribute.size as usize];
 
                         byte_offset += point_attribute.size as usize;

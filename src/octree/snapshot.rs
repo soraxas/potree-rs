@@ -1,5 +1,5 @@
 use crate::octree::aabb::Aabb;
-use crate::octree::node::{NodeType, OctreeNode};
+use crate::octree::node::{OctreeNode, NodeType};
 use crate::octree::NodeId;
 
 #[derive(Clone, Debug, Default)]

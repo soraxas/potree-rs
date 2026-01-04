@@ -82,7 +82,9 @@ impl ResourceLoader {
                 not(feature = "ehttp"),
                 not(feature = "ehttp_local")
             ))]
-            Err(ResourceError::Unsupported("Scheme not supported".to_string()))
+            Err(ResourceError::Unsupported(
+                "Scheme not supported".to_string(),
+            ))
         }
     }
     pub async fn get(

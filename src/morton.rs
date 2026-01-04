@@ -7,7 +7,6 @@ pub fn read_morton_64(bytes: &[u8]) -> (u16, u16, u16) {
     decode_morton_64(mc_0, mc_1)
 }
 
-
 pub fn read_morton_128(bytes: &[u8]) -> (u32, u32, u32) {
     let mc_0 = LittleEndian::read_u32(&bytes[4..8]);
     let mc_1 = LittleEndian::read_u32(&bytes[0..4]);

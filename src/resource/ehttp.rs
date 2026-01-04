@@ -1,8 +1,8 @@
-use std::collections::BTreeMap;
-use async_trait::async_trait;
 use super::{ResourceClient, ResourceError};
+use async_trait::async_trait;
 #[cfg(target_arch = "wasm32")]
 use ehttp::Mode;
+use std::collections::BTreeMap;
 
 #[derive(Clone, Debug)]
 pub struct EhttpClient;
@@ -41,7 +41,9 @@ impl ResourceClient for EhttpClient {
             let _ = tx.send(res);
         });
 
-        let response = rx.await.map_err(|_| ResourceError::Network("channel closed".to_string()))?;
+        let response = rx
+            .await
+            .map_err(|_| ResourceError::Network("channel closed".to_string()))?;
         let response = response.map_err(|e| ResourceError::Network(format!("{:?}", e)))?;
 
         Ok(response.bytes)

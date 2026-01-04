@@ -6,10 +6,11 @@ Features / Roadmap:
 - [x] Load (asynchronously) and parse hierarchy (lazy & entire) from filesystem or http
 - [x] Native & WASM compatibility
 - [x] WASM Multithread compatibility (using SharedArrayBuffer and specific http headers)
-- [ ] Load points 
-- [ ] Octree frustum culling helpers
+- [x] Provide a simple slab implementation to load points progressively
+- [-] Load points (in progress, not all attributes are loaded for the moment)
+- [ ] Make datasource customizable (`ResourceLoader` should be a trait)
 
-# Download sample potree file
+## Download sample potree file
 
 Go in the `assets/heidentor` folder and run `dl.sh` script:
 
@@ -18,12 +19,47 @@ cd assets/heidentor/
 ./dl.sh
 ```
 
-# Run WASM Multithreaded example
+## Run the read native example
 
-This example uses a webworker for parsing, and delegates the http requests to the main thread (using provided `EhttpClientLocal`).
+There is multiple native examples:
+
+### Load points from http
+
+This example loads points from an http url source using ehttp client:
+
+```bash
+cargo run --features="ehttp" --example read_native_http
+```
+
+### Load points from http
+
+This example loads points from an http url source using ehttp client:
+
+```bash
+cargo run --features="ehttp" --example read_native_http
+```
+
+### Load points from local filesystem
+
+This example loads points from an http url source using ehttp client:
+
+```bash
+cargo run --features="fs" --example read_native_fs
+```
+
+### Load points from local filesystem using a slab
+
+This example loads points from an http url source using ehttp client:
+
+```bash
+cargo run --features="fs" --example read_native_slab
+```
+
+## Build WASM example
+
+This example loads a potree point cloud in the browser in the main thread.
 
 To prevent the worker to terminate and not executing async tasks, the example uses the hack mentionned in this issue: https://github.com/rustwasm/wasm-bindgen/issues/2945.
-
 
 To build the example, comment the tokio dev dependency from `Cargo.toml`.
 
@@ -32,6 +68,22 @@ Then, build using the provided script: (install the required rust nightly if ask
 ```bash
 ./build_wasm.sh
 ```
+
+## Build WASM multithreaded example
+
+This example uses a webworker for parsing, and delegates the http requests to the main thread (using provided `EhttpClientLocal`).
+
+To prevent the worker to terminate and not executing async tasks, the example uses the hack mentionned in this issue: https://github.com/rustwasm/wasm-bindgen/issues/2945.
+
+To build the example, comment the tokio dev dependency from `Cargo.toml`.
+
+Then, build using the provided script: (install the required rust nightly if asked)
+
+```bash
+./build_wasm_worker.sh
+```
+
+## Run WASM simple or multithreaded example
 
 Install express and run `serve.js`:
 
@@ -42,4 +94,11 @@ npm install express
 node serve.js
 ```
 
-Open the browser at address http://localhost:8080 and check network / console panels to see the requests / logs.
+Open the browser at address http://localhost:8080/wasm/ and check network / console panels to see the requests / logs.
+
+
+## Credits
+
+- Potree file format has been created by Markus Schütz, see [Potree](https://github.com/potree/potree)
+  Copyright (c) 2011-2020, Markus Schütz  
+  Licensed under the BSD 2-Clause License (see THIRD_PARTY_LICENSES.md).

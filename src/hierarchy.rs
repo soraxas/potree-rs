@@ -1,54 +1,20 @@
 use crate::metadata::{LoadPointsError, Metadata, Points};
 use crate::octree::aabb::create_child_aabb;
-use crate::octree::node::{iter_one_bits, NodeType, OctreeNode, U8BitExt};
-use crate::octree::snapshot::OctreeNodeSnapshot;
-use crate::octree::{FlatOctree, NodeId};
-use crate::point::PointData;
-use crate::resource::{ResourceError, ResourceLoader};
+use crate::octree::node::{OctreeNode, NodeType};
+use crate::point_cloud::{HierarchyNodeEntry, LoadPotreePointCloudError};
+use crate::prelude::ReadHierarchyError;
+use crate::resource::ResourceLoader;
 use binrw::prelude::*;
 use binrw::BinReaderExt;
-use std::io::{Cursor, Read};
-use thiserror::Error;
-
-#[derive(Error, Debug)]
-pub enum LoadPotreePointCloudError {
-    #[error("Error loading metadatas: {0}")]
-    LoadMetadataError(ResourceError),
-
-    #[error("Error loading hierarchy: {0}")]
-    ReadHierarchyError(#[from] ReadHierarchyError),
-
-    #[error("Error loading resource: {0}")]
-    ResourceError(#[from] ResourceError),
-}
-
-#[derive(Error, Debug)]
-pub enum ReadHierarchyError {
-    #[error("Hierarchy is already loaded")]
-    AlreadyLoaded,
-
-    #[error("Invalid json: {0}")]
-    JsonError(#[from] serde_json::error::Error),
-
-    #[error("IO Error")]
-    Io(#[from] std::io::Error),
-
-    #[error("Resource error: {0}")]
-    Resource(#[from] ResourceError),
-
-    #[error("Invalid binary data")]
-    InvalidBinaryData(#[from] binrw::error::Error),
-
-    #[error("There is nothing to load because node is not a proxy")]
-    NothingToLoad,
-}
+use std::collections::VecDeque;
+use std::io::Cursor;
+use tracing::warn;
 
 #[derive(Clone, Debug)]
 pub struct Hierarchy {
     metadata: Metadata,
     hierarchy_url: String,
     octree_url: String,
-    octree: FlatOctree<OctreeNode>,
     resource_loader: ResourceLoader,
 }
 
@@ -63,8 +29,6 @@ impl Hierarchy {
         url: &str,
         resource_loader: ResourceLoader,
     ) -> Result<Hierarchy, LoadPotreePointCloudError> {
-        let octree = FlatOctree::new();
-
         let metadata_url = format!("{}/metadata.json", url).to_string();
         let hierarchy_url = format!("{}/hierarchy.bin", url).to_string();
         let metadata = resource_loader
@@ -72,40 +36,28 @@ impl Hierarchy {
             .await
             .map_err(|error| LoadPotreePointCloudError::ResourceError(error))?;
 
-        let mut this = Self {
+        Ok(Self {
             metadata,
             hierarchy_url,
             octree_url: format!("{}/octree.bin", url).to_string(),
-            octree,
             resource_loader,
-        };
-
-        this.load_initial_hierarchy().await?;
-
-        Ok(this)
+        })
     }
 
-    async fn load_initial_hierarchy(&mut self) -> Result<(), ReadHierarchyError> {
-        let root_id = self.octree.root_id();
-        // get the root node
-        let root = self.octree.root_mut();
-
+    pub async fn load_initial_hierarchy(&self) -> Result<Vec<OctreeNode>, ReadHierarchyError> {
         // load root node metadatas
-        *root = self.metadata.create_root_node();
-
-        // set its id
-        root.id = Some(root_id);
+        let root = self.metadata.create_flat_root_node();
 
         // load its hierarchy
-        self.load_hierarchy(root_id).await?;
+        let nodes = self.load_hierarchy(&root).await?;
 
-        Ok(())
+        Ok(nodes)
     }
 
-    pub async fn load_hierarchy(&mut self, node_id: NodeId) -> Result<(), ReadHierarchyError> {
-        // get the root node
-        let node = self.octree.node(node_id).unwrap();
-
+    pub async fn load_hierarchy(
+        &self,
+        node: &OctreeNode,
+    ) -> Result<Vec<OctreeNode>, ReadHierarchyError> {
         if matches!(node.node_type, NodeType::Proxy) {
             let data = self
                 .resource_loader
@@ -117,218 +69,203 @@ impl Hierarchy {
                 )
                 .await?;
 
-            self.parse_hierarchy(node_id, &data)?;
+            Ok(parse_flat_hierarchy(node, &data)?)
+        } else {
+            // this node is not a proxy, so its hierarchy can't be loaded
+            Err(ReadHierarchyError::AlreadyLoaded)
         }
-
-        Ok(())
     }
 
-    pub async fn load_entire_hierarchy(&mut self) -> Result<(), ReadHierarchyError> {
-        // get the root node
-        let root = self.octree.root();
-        let children = root.children.clone();
+    pub async fn load_entire_hierarchy(&self) -> Result<Vec<OctreeNode>, ReadHierarchyError> {
+        let root = self.metadata.create_flat_root_node();
 
-        for i in iter_one_bits(root.children_mask) {
-            let child = children[i as usize];
-            self.parse_entire_hierarchy(child).await?;
-        }
-
-        Ok(())
+        Ok(self.load_entire_hierarchy_from_proxy(root).await?)
     }
 
-    async fn parse_entire_hierarchy(&mut self, node_id: NodeId) -> Result<(), ReadHierarchyError> {
-        // load the node's hierarchy
-        self.load_hierarchy(node_id).await?;
-
-        // get the node's children
-        let node = self
-            .octree
-            .node(node_id)
-            .expect("parse_entire_hierarchy: invalid node_id");
-        let children = node.children.clone();
-
-        // load children hierarchy
-        for i in iter_one_bits(node.children_mask) {
-            let child = children[i as usize];
-            Box::pin(self.parse_entire_hierarchy(child)).await?;
+    pub async fn load_entire_hierarchy_from_proxy(
+        &self,
+        node: OctreeNode,
+    ) -> Result<Vec<OctreeNode>, ReadHierarchyError> {
+        if !matches!(node.node_type, NodeType::Proxy) {
+            // node is not a proxy
+            return Err(ReadHierarchyError::NothingToLoad);
         }
 
-        Ok(())
-    }
+        // initialize a stack
+        let mut stack = VecDeque::new();
+        stack.push_back(node);
 
-    fn parse_hierarchy(&mut self, node_id: NodeId, buf: &[u8]) -> Result<(), ReadHierarchyError> {
-        const BYTES_PER_NODE: usize = 22;
-        let mut cursor = Cursor::new(buf);
-        let num_nodes = buf.len() / BYTES_PER_NODE;
+        // initialize the output nodes
+        let mut nodes: Vec<OctreeNode> = Vec::new();
 
-        // reserve additional nodes
-        self.octree.reserve(num_nodes - 1);
-        // allocate additional nodes
-        let nodes = vec![OctreeNode::default(); num_nodes - 1];
-        // store all node ids
-        let mut node_ids = Vec::with_capacity(num_nodes);
-        node_ids.push(node_id);
+        // for each node in stack
+        while let Some(node) = stack.pop_front() {
+            let next_index = nodes.len();
+            let stack_offset = stack.len();
 
-        // insert these nodes
-        for node in nodes {
-            let node_id = self.octree.insert(node);
-            self.octree.node_mut(node_id).unwrap().id = Some(node_id);
-            node_ids.push(node_id);
-        }
+            let node = match node.node_type {
+                // if it's proxy, load it and its hierarchy, and all new nodes to the stack
+                NodeType::Proxy => {
+                    // keep node's parent
+                    let first_node_parent = node.parent;
+                    let nodes = self.load_hierarchy(&node).await?;
 
-        // position of the next node to write in
-        let mut node_pos = 1;
-
-        // the first node is always the root of the (sub-)hierarchy we are loading
-        for i in 0..num_nodes {
-            let current_id = node_ids[i];
-            let current = self.octree.node_mut(current_id).unwrap();
-
-            let header: HierarchyNodeEntry = cursor.read_le()?;
-
-            if matches!(current.node_type, NodeType::Proxy) {
-                current.byte_offset = header.byte_offset;
-                current.byte_size = header.byte_size;
-                current.num_points = header.num_points;
-            } else if header.r#type == 2 {
-                current.hierarchy_byte_offset = header.byte_offset;
-                current.hierarchy_byte_size = header.byte_size;
-                current.num_points = header.num_points;
-            } else {
-                current.byte_offset = header.byte_offset;
-                current.byte_size = header.byte_size;
-                current.num_points = header.num_points;
-            }
-
-            if current.byte_size == 0 {
-                // workaround for issue https://github.com/potree/potree/issues/1125
-                // some inner nodes erroneously report >0 points even though have 0 points
-                // however, they still report a ByteSize of 0, so based on that we now set node.NumPoints to 0
-                current.num_points = 0;
-            }
-
-            current.node_type = header.r#type.into();
-
-            if matches!(current.node_type, NodeType::Proxy) {
-                // the children are not yet known, no need to process them
-                continue;
-            }
-
-            let mut children: [NodeId; 8] = [NodeId::default(); 8];
-
-            // clone/copy just what we need
-            let (current_name, current_bounding_box, current_spacing, current_level) = (
-                current.name.clone(),
-                current.bounding_box.clone(),
-                current.spacing,
-                current.level,
-            );
-
-            for child_index in 0_u8..8 {
-                let child_exists = ((1 << child_index) & header.child_mask) != 0;
-                if !child_exists {
-                    continue;
+                    // assign correct parent index
+                    let Some(node) = ({
+                        let mut first_node = None;
+                        for (i, mut node) in nodes.into_iter().enumerate() {
+                            if i == 0 {
+                                // reassign initial node's parent because it hasn't changed
+                                node.parent = first_node_parent;
+                                first_node = Some(node);
+                            } else {
+                                // update node's parent index
+                                match node.parent {
+                                    Some(0) => {
+                                        node.parent = Some(next_index);
+                                    }
+                                    Some(parent @ 1..) => {
+                                        node.parent = Some(parent + next_index + stack_offset);
+                                    }
+                                    None => {}
+                                }
+                                stack.push_back(node);
+                            }
+                        }
+                        first_node
+                    }) else {
+                        warn!("A proxy node has missing hierarchy, should not happen.");
+                        continue;
+                    };
+                    node
                 }
+                // else, just process this node
+                _ => node,
+            };
 
-                // get the next child id
-                let child_id = node_ids[node_pos];
-
-                // get mutable access to the pre-allocated child
-                let child = self.octree.node_mut(child_id).unwrap();
-                child.name.clear();
-                child
-                    .name
-                    .push_str(&format!("{}{}", current_name, child_index));
-                child.bounding_box = create_child_aabb(&current_bounding_box, child_index);
-                child.spacing = current_spacing / 2.0;
-                child.level = current_level + 1;
-                child.parent = Some(current_id);
-                child.child_index = child_index;
-
-                children[child_index as usize] = child_id;
-
-                // increment node_pos for the next child
-                node_pos += 1;
+            // update child index in parent's children
+            if let Some(parent) = node.parent {
+                nodes[parent].children[node.child_index as usize] = next_index;
             }
 
-            // finally, append the children to the parent
-            let current = self.octree.node_mut(current_id).unwrap();
-            current.children = children;
-            current.children_mask = header.child_mask;
+            // add the node to the list of nodes
+            nodes.push(node);
         }
 
-        Ok(())
-    }
-
-    /// Takes a snapshot of the current loaded hierarchy and return it
-    pub fn hierarchy_snapshot(&self) -> Vec<OctreeNodeSnapshot> {
-        self.hierarchy_snaphot_from_node(self.octree.root())
-    }
-
-    fn hierarchy_snaphot_from_node(&self, node: &OctreeNode) -> Vec<OctreeNodeSnapshot> {
-        let mut stack = vec![(0_usize, node)];
-        let mut nodes = Vec::new();
-
-        while let Some((parent_index, node)) = stack.pop() {
-            // get the current node future index
-            let current_index = nodes.len();
-
-            // process children
-            for i in iter_one_bits(node.children_mask) {
-                let child = &node.children[i as usize];
-
-                let child = self
-                    .octree
-                    .node(*child)
-                    .expect("missing node in hierarchy, shouldn't happen");
-                stack.push((current_index, child));
-            }
-
-            // add the current node to the nodes array
-            let mut node_snapshot: OctreeNodeSnapshot = node.into();
-            node_snapshot.index = current_index;
-            nodes.push(node_snapshot);
-
-            // if there is a parent, add it to the children array on an empty space
-            if parent_index < current_index {
-                let parent_node = &mut nodes[parent_index];
-                *parent_node
-                    .children
-                    .iter_mut()
-                    .find(|child| **child == 0)
-                    .expect("no empty child space available, there might be a problem") =
-                    current_index;
-            }
-        }
-
-        nodes
+        Ok(nodes)
     }
 
     // Functions to load points
-    pub async fn load_points(&self, node_id: NodeId) -> Result<Points, LoadPointsError> {
-        let node = self
-            .octree
-            .node(node_id)
-            .ok_or(LoadPointsError::NodeNotFound)?;
+    pub async fn load_points(&self, node: &OctreeNode) -> Result<Points, LoadPointsError> {
+        let buffer = self
+            .resource_loader
+            .get_range(
+                &self.octree_url,
+                node.byte_offset,
+                node.byte_size as usize,
+                None,
+            )
+            .await?;
 
-        self.metadata
-            .load_points_for_node(node, &self.octree_url, &self.resource_loader)
-            .await
-    }
+        let points = self
+            .metadata
+            .load_points(node.num_points, &node.bounding_box, &buffer)?;
 
-    // Functions to access the octree
-    pub fn octree(&self) -> &FlatOctree<OctreeNode> {
-        &self.octree
+        Ok(points)
     }
 }
 
-#[binrw]
-#[derive(Clone, Debug)]
-#[br(little)]
-pub struct HierarchyNodeEntry {
-    pub r#type: u8,
-    pub child_mask: u8,
-    pub num_points: u32,
-    pub byte_offset: u64,
-    pub byte_size: u64,
+pub fn parse_flat_hierarchy(
+    proxy_node: &OctreeNode,
+    buf: &[u8],
+) -> Result<Vec<OctreeNode>, ReadHierarchyError> {
+    const BYTES_PER_NODE: usize = 22;
+    let mut cursor = Cursor::new(buf);
+    let num_nodes = buf.len() / BYTES_PER_NODE;
+
+    // allocate nodes
+    let mut nodes = vec![OctreeNode::default(); num_nodes];
+
+    // set first node
+    nodes[0] = proxy_node.clone();
+    // remove the parent because it becomes the root
+    nodes[0].parent = None;
+
+    // position of the next node to write in
+    let mut node_pos = 1;
+
+    // the first node is always the root of the (sub-)hierarchy we are loading
+    for i in 0..num_nodes {
+        let current = &mut nodes[i];
+
+        let header: HierarchyNodeEntry = cursor.read_le()?;
+
+        if matches!(current.node_type, NodeType::Proxy) {
+            current.byte_offset = header.byte_offset;
+            current.byte_size = header.byte_size;
+            current.num_points = header.num_points;
+        } else if header.r#type == 2 {
+            current.hierarchy_byte_offset = header.byte_offset;
+            current.hierarchy_byte_size = header.byte_size;
+            current.num_points = header.num_points;
+        } else {
+            current.byte_offset = header.byte_offset;
+            current.byte_size = header.byte_size;
+            current.num_points = header.num_points;
+        }
+
+        if current.byte_size == 0 {
+            // workaround for issue https://github.com/potree/potree/issues/1125
+            // some inner nodes erroneously report >0 points even though have 0 points
+            // however, they still report a ByteSize of 0, so based on that we now set node.NumPoints to 0
+            current.num_points = 0;
+        }
+
+        current.node_type = header.r#type.into();
+
+        if matches!(current.node_type, NodeType::Proxy) {
+            // the children are not yet known, no need to process them
+            continue;
+        }
+
+        let mut children: [usize; 8] = [0_usize; 8];
+
+        // clone/copy just what we need
+        let (current_name, current_bounding_box, current_spacing, current_level) = (
+            current.name.clone(),
+            current.bounding_box.clone(),
+            current.spacing,
+            current.level,
+        );
+
+        for child_index in 0_u8..8 {
+            let child_exists = ((1 << child_index) & header.child_mask) != 0;
+            if !child_exists {
+                continue;
+            }
+
+            // get mutable access to the pre-allocated child
+            let child = &mut nodes[node_pos];
+            child
+                .name
+                .push_str(&format!("{}{}", current_name, child_index));
+            child.bounding_box = create_child_aabb(&current_bounding_box, child_index);
+            child.spacing = current_spacing / 2.0;
+            child.level = current_level + 1;
+            child.parent = Some(i);
+            child.child_index = child_index;
+
+            children[child_index as usize] = node_pos;
+
+            // increment node_pos for the next child
+            node_pos += 1;
+        }
+
+        // finally, append the children to the parent
+        let current = &mut nodes[i];
+        current.children = children;
+        current.children_mask = header.child_mask;
+    }
+
+    Ok(nodes)
 }

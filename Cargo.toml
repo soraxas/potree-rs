@@ -5,15 +5,23 @@ edition = "2024"
 
 [[example]]
 name = "read_wasm"
+required-features = ["wasm"]
+
+[[example]]
+name = "read_wasm_worker"
 required-features = ["wasm_worker"]
 
 [[example]]
-name = "read_native"
+name = "read_native_slab"
 required-features = ["fs"]
 
 [[example]]
-name = "read_native_flat"
-required-features = ["fs", "ehttp"]
+name = "read_native_fs"
+required-features = ["fs"]
+
+[[example]]
+name = "read_native_http"
+required-features = ["ehttp"]
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
@@ -48,8 +56,8 @@ fs = []
 tokio = ["dep:tokio", "tokio/rt"]
 async-fs = ["dep:async-fs"]
 reqwest = ["dep:reqwest"]
-wasm = ["ehttp", "dep:wasm-bindgen"]
-wasm_worker = ["ehttp_local", "dep:wasm-bindgen"]
+wasm = ["ehttp", "dep:wasm-bindgen", "dep:wasm-bindgen-futures"]
+wasm_worker = ["ehttp_local", "dep:wasm-bindgen", "dep:wasm-bindgen-futures"]
 ehttp = ["dep:ehttp"]
 ehttp_local = ["ehttp", "wasm", "dep:wasm-bindgen-futures"]
 

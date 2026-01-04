@@ -1,7 +1,7 @@
 use crate::resource::ehttp::EhttpClient;
 use crate::resource::{ResourceClient, ResourceError};
 use async_trait::async_trait;
-use futures::channel::mpsc::{SendError, UnboundedReceiver, UnboundedSender, unbounded};
+use futures::channel::mpsc::{unbounded, SendError, UnboundedReceiver, UnboundedSender};
 use futures::channel::oneshot;
 use futures::{SinkExt, StreamExt};
 use std::collections::BTreeMap;
