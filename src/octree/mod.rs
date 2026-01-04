@@ -72,6 +72,12 @@ pub struct Octree<T> {
     root_id: NodeId,
 }
 
+impl<T> Default for Octree<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<T> Octree<T> {
     pub fn new() -> Self {
         let storage = Slab::new();

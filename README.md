@@ -19,37 +19,38 @@ cd assets/heidentor/
 ./dl.sh
 ```
 
-## Run the read native example
+## Run the native examples
 
-There is multiple native examples:
-
-### Load points from http
+### Load points from http using ehttp + tokio
 
 This example loads points from an http url source using ehttp client:
 
 ```bash
-cargo run --features="ehttp" --example read_native_http
+cargo run --features="ehttp tokio_dev" --example read_native_ehttp
 ```
 
-### Load points from http
+### Load points from http using reqwest + tokio
 
-This example loads points from an http url source using ehttp client:
+This example loads points from an http url source using reqwest client:
 
 ```bash
-cargo run --features="ehttp" --example read_native_http
+cargo run --features="reqwest tokio_dev" --example read_native_reqwest
 ```
 
 ### Load points from local filesystem
 
-This example loads points from an http url source using ehttp client:
+This example loads points from local filesystem:
 
 ```bash
-cargo run --features="fs" --example read_native_fs
+cargo run --features="fs tokio_dev" --example read_native_fs
 ```
 
-### Load points from local filesystem using a slab
+### Load points from local filesystem using a slab structure:
 
-This example loads points from an http url source using ehttp client:
+This example loads point cloud structure from local filesystem and store it in a slab data structure.
+
+Then, it loads the root node points.
+
 
 ```bash
 cargo run --features="fs" --example read_native_slab
@@ -61,9 +62,7 @@ This example loads a potree point cloud in the browser in the main thread.
 
 To prevent the worker to terminate and not executing async tasks, the example uses the hack mentionned in this issue: https://github.com/rustwasm/wasm-bindgen/issues/2945.
 
-To build the example, comment the tokio dev dependency from `Cargo.toml`.
-
-Then, build using the provided script: (install the required rust nightly if asked)
+To build the example, use the provided script: (install the required rust nightly if asked)
 
 ```bash
 ./build_wasm.sh
@@ -75,9 +74,7 @@ This example uses a webworker for parsing, and delegates the http requests to th
 
 To prevent the worker to terminate and not executing async tasks, the example uses the hack mentionned in this issue: https://github.com/rustwasm/wasm-bindgen/issues/2945.
 
-To build the example, comment the tokio dev dependency from `Cargo.toml`.
-
-Then, build using the provided script: (install the required rust nightly if asked)
+To build the example, use the provided script: (install the required rust nightly if asked)
 
 ```bash
 ./build_wasm_worker.sh

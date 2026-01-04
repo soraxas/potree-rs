@@ -4,7 +4,7 @@ mod ehttp;
 #[cfg(feature = "fs")]
 mod file;
 
-#[cfg(feature = "reqwest")]
+#[cfg(all(feature = "reqwest", not(any(feature = "wasm", feature = "ehttp"))))]
 mod reqwest;
 
 #[cfg(feature = "ehttp_local")]
@@ -22,7 +22,7 @@ pub struct ResourceLoader {
     #[cfg(feature = "fs")]
     file: file::FileClient,
 
-    #[cfg(all(feature = "reqwest", not(all(feature = "wasm", feature = "ehttp"))))]
+    #[cfg(all(feature = "reqwest", not(any(feature = "wasm", feature = "ehttp"))))]
     http: reqwest::ReqwestClient,
 
     #[cfg(all(feature = "ehttp", not(feature = "ehttp_local")))]
@@ -32,12 +32,18 @@ pub struct ResourceLoader {
     http: ehttp_local::EhttpClientLocal,
 }
 
+impl Default for ResourceLoader {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ResourceLoader {
     pub fn new() -> Self {
         Self {
             #[cfg(feature = "fs")]
             file: file::FileClient,
-            #[cfg(all(feature = "reqwest", not(all(feature = "wasm", feature = "ehttp"))))]
+            #[cfg(all(feature = "reqwest", not(any(feature = "wasm", feature = "ehttp"))))]
             http: reqwest::ReqwestClient::new(),
 
             #[cfg(all(feature = "ehttp", not(feature = "ehttp_local")))]
@@ -92,7 +98,7 @@ impl ResourceLoader {
         url: &str,
         headers: Option<BTreeMap<String, String>>,
     ) -> Result<Vec<u8>, ResourceError> {
-        Ok(self.get_delegate(url)?.get(url, headers).await?)
+        self.get_delegate(url)?.get(url, headers).await
     }
 
     pub async fn get_range(
@@ -102,10 +108,9 @@ impl ResourceLoader {
         length: usize,
         headers: Option<BTreeMap<String, String>>,
     ) -> Result<Vec<u8>, ResourceError> {
-        Ok(self
-            .get_delegate(url)?
+        self.get_delegate(url)?
             .get_range(url, offset, length, headers)
-            .await?)
+            .await
     }
 
     pub async fn get_json<T: DeserializeOwned + Send>(
@@ -113,7 +118,7 @@ impl ResourceLoader {
         url: &str,
         headers: Option<BTreeMap<String, String>>,
     ) -> Result<T, ResourceError> {
-        Ok(self.get_delegate(url)?.get_json(url, headers).await?)
+        self.get_delegate(url)?.get_json(url, headers).await
     }
 }
 
@@ -161,7 +166,7 @@ trait ResourceClient: Send + Sync + Clone {
 pub enum ErasedResourceClient<'a> {
     #[cfg(feature = "fs")]
     File(&'a file::FileClient),
-    #[cfg(all(feature = "reqwest", not(all(feature = "wasm", feature = "ehttp"))))]
+    #[cfg(all(feature = "reqwest", not(any(feature = "wasm", feature = "ehttp"))))]
     Http(&'a reqwest::ReqwestClient),
     #[cfg(all(feature = "ehttp", not(feature = "ehttp_local")))]
     Http(&'a ehttp::EhttpClient),

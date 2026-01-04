@@ -1,6 +1,6 @@
 use crate::morton::{read_morton_128, read_morton_64};
 use crate::octree::aabb::Aabb;
-use crate::octree::node::{OctreeNode, NodeType};
+use crate::octree::node::{NodeType, OctreeNode};
 use crate::point::PointData;
 use crate::resource::{ResourceError, ResourceLoader};
 use byteorder::{ByteOrder, LittleEndian};
@@ -340,11 +340,11 @@ fn to_index(position: &DVec3, size: &DVec3) -> usize {
     (index.x + GRID_SIZE_UINT * index.y + GRID_SIZE_UINT * GRID_SIZE_UINT * index.z) as usize
 }
 
-impl Into<Aabb> for BoundingBox {
-    fn into(self) -> Aabb {
+impl From<BoundingBox> for Aabb {
+    fn from(val: BoundingBox) -> Self {
         Aabb {
-            min: self.min.into(),
-            max: self.max.into(),
+            min: val.min.into(),
+            max: val.max.into(),
         }
     }
 }

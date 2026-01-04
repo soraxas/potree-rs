@@ -15,10 +15,7 @@ pub enum NodeType {
 
 impl NodeType {
     pub fn has_points(&self) -> bool {
-        match self {
-            NodeType::Node | NodeType::Leaf => true,
-            _ => false,
-        }
+        matches!(self, NodeType::Node | NodeType::Leaf)
     }
 }
 
@@ -33,9 +30,9 @@ impl From<u8> for NodeType {
     }
 }
 
-impl Into<u8> for NodeType {
-    fn into(self) -> u8 {
-        match self {
+impl From<NodeType> for u8 {
+    fn from(val: NodeType) -> Self {
+        match val {
             NodeType::Node => 0,
             NodeType::Leaf => 1,
             NodeType::Proxy => 2,

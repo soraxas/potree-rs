@@ -2,7 +2,7 @@ use crate::hierarchy::Hierarchy;
 use crate::metadata::{LoadPointsError, Points};
 use crate::octree::node::{iter_one_bits, NodeType, OctreeNode};
 use crate::octree::snapshot::OctreeNodeSnapshot;
-use crate::octree::{Octree, NodeId};
+use crate::octree::{NodeId, Octree};
 use crate::resource::{ResourceError, ResourceLoader};
 use binrw::prelude::*;
 use thiserror::Error;
@@ -172,7 +172,7 @@ impl PointCloud {
             .octree
             .root()
             .ok_or_else(|| ReadHierarchyError::NodeNotFound)?;
-        let children = root.children.clone();
+        let children = root.children;
 
         for i in iter_one_bits(root.children_mask) {
             let child = children[i as usize];
@@ -195,7 +195,7 @@ impl PointCloud {
             .node(node_id)
             .ok_or_else(|| ReadHierarchyError::NodeNotFound)?;
 
-        let children = node.children.clone();
+        let children = node.children;
 
         for i in iter_one_bits(node.children_mask) {
             let child = children[i as usize];

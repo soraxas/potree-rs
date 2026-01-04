@@ -20,8 +20,14 @@ name = "read_native_fs"
 required-features = ["fs"]
 
 [[example]]
-name = "read_native_http"
-required-features = ["ehttp"]
+path = "examples/read_native_http.rs"
+name = "read_native_ehttp"
+required-features = ["ehttp", "tokio_dev"]
+
+[[example]]
+path = "examples/read_native_http.rs"
+name = "read_native_reqwest"
+required-features = ["reqwest", "tokio_dev"]
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
@@ -44,8 +50,6 @@ brotli-decompressor = "5.0"
 byteorder = "1.5.0"
 
 [dev-dependencies]
-# Comment the line below to compile WASM example
-tokio = { version = "1", features = ["rt", "macros", "rt-multi-thread"] }
 wasm_thread = { version = "0.3.3" }
 tracing-subscriber = "0.3"
 tracing-subscriber-wasm = "0.1.0"
@@ -54,8 +58,9 @@ tracing-subscriber-wasm = "0.1.0"
 default = []
 fs = []
 tokio = ["dep:tokio", "tokio/rt"]
+tokio_dev = ["tokio/macros", "tokio/rt"]
 async-fs = ["dep:async-fs"]
-reqwest = ["dep:reqwest"]
+reqwest = ["tokio", "dep:reqwest"]
 wasm = ["ehttp", "dep:wasm-bindgen", "dep:wasm-bindgen-futures"]
 wasm_worker = ["ehttp_local", "dep:wasm-bindgen", "dep:wasm-bindgen-futures"]
 ehttp = ["dep:ehttp"]

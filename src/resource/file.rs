@@ -5,7 +5,7 @@ use std::io::SeekFrom;
 #[cfg(all(not(feature = "tokio"), not(feature = "async-fs")))]
 use std::io::{Read, Seek};
 
-#[cfg(feature = "async-fs")]
+#[cfg(all(not(feature = "tokio"), feature = "async-fs"))]
 use futures::{AsyncReadExt, AsyncSeekExt};
 #[cfg(feature = "tokio")]
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
@@ -59,7 +59,7 @@ impl ResourceClient for FileClient {
             Ok(bytes)
         }
 
-        #[cfg(feature = "async-fs")]
+        #[cfg(all(not(feature = "tokio"), feature = "async-fs"))]
         {
             let mut file = async_fs::File::open(path).await?;
             file.seek(SeekFrom::Start(offset)).await?;

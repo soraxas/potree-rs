@@ -1,6 +1,6 @@
 use crate::metadata::{LoadPointsError, Metadata, Points};
 use crate::octree::aabb::create_child_aabb;
-use crate::octree::node::{OctreeNode, NodeType};
+use crate::octree::node::{NodeType, OctreeNode};
 use crate::point_cloud::{HierarchyNodeEntry, LoadPotreePointCloudError};
 use crate::prelude::ReadHierarchyError;
 use crate::resource::ResourceLoader;
@@ -34,7 +34,7 @@ impl Hierarchy {
         let metadata = resource_loader
             .get_json(&metadata_url, None)
             .await
-            .map_err(|error| LoadPotreePointCloudError::ResourceError(error))?;
+            .map_err(LoadPotreePointCloudError::ResourceError)?;
 
         Ok(Self {
             metadata,
@@ -79,7 +79,7 @@ impl Hierarchy {
     pub async fn load_entire_hierarchy(&self) -> Result<Vec<OctreeNode>, ReadHierarchyError> {
         let root = self.metadata.create_flat_root_node();
 
-        Ok(self.load_entire_hierarchy_from_proxy(root).await?)
+        self.load_entire_hierarchy_from_proxy(root).await
     }
 
     pub async fn load_entire_hierarchy_from_proxy(
