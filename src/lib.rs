@@ -1,3 +1,5 @@
+#[cfg(feature = "converter")]
+pub mod convert;
 pub mod hierarchy;
 pub mod metadata;
 mod morton;
