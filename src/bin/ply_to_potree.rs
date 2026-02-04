@@ -2,7 +2,6 @@ use std::path::PathBuf;
 
 use clap::Parser;
 use potree::convert::ply_loader::load_ply_positions;
-use potree::convert::build_potree_buffers;
 
 /// Convert a PLY file into Potree format (octree.bin, hierarchy.bin, metadata.json)
 #[derive(Debug, Parser)]
@@ -46,14 +45,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     std::fs::create_dir_all(&output)?;
 
-    let buffers = build_potree_buffers(
-        &name,
-        &args.projection.unwrap_or_default(),
-        &data.positions,
-        data.colors.as_deref(),
-        scale_arr,
-        "DEFAULT",
-    )?;
+    let mut builder = data
+        .into_potree_builder()
+        .name(name)
+        .target_scale(scale_arr);
+    if let Some(projection) = args.projection {
+        builder = builder.projection(projection);
+    }
+
+    let buffers = builder.build()?;
 
     let octree_path = output.join("octree.bin");
     let hierarchy_path = output.join("hierarchy.bin");

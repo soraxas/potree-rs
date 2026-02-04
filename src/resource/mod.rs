@@ -4,7 +4,7 @@ mod ehttp;
 #[cfg(feature = "fs")]
 mod file;
 
-mod buffer;
+pub mod buffer;
 
 #[cfg(all(feature = "reqwest", not(any(feature = "wasm", feature = "ehttp"))))]
 mod reqwest;
@@ -61,6 +61,7 @@ impl ResourceLoader {
         }
     }
 
+    /// Add a buffer client to the resource loader.
     pub fn with_buffer(mut self, buffer: buffer::BufferClient) -> Self {
         self.buffer = Some(buffer);
         self
@@ -77,11 +78,11 @@ impl ResourceLoader {
                 #[cfg(feature = "fs")]
                 "file" => Ok(ErasedResourceClient::File(&self.file)),
                 "buffer" => {
-                    let buffer = self.buffer.as_ref().ok_or_else(|| ResourceError::Unsupported(
-                        "Memory backend not configured".to_string(),
-                    ))?;
+                    let buffer = self.buffer.as_ref().ok_or_else(|| {
+                        ResourceError::Unsupported("Memory backend not configured".to_string())
+                    })?;
                     Ok(ErasedResourceClient::Memory(buffer))
-                },
+                }
                 _ => Err(ResourceError::Unsupported(format!(
                     "Unknown scheme {scheme}"
                 ))),

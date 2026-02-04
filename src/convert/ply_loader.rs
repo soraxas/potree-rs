@@ -8,6 +8,8 @@ use ply_rs_bw::{
 };
 use thiserror::Error;
 
+use crate::resource::buffer::PotreeBuilder;
+
 #[derive(Debug, Error)]
 pub enum PlyLoadError {
     #[error("io error: {0}")]
@@ -27,6 +29,16 @@ pub enum PlyLoadError {
 pub struct PlyPositions {
     pub positions: Vec<[f64; 3]>,
     pub colors: Option<Vec<[u16; 3]>>,
+}
+
+impl PlyPositions {
+    pub fn into_potree_builder(self) -> PotreeBuilder {
+        let mut builder = PotreeBuilder::new().positions(self.positions);
+        if let Some(colors) = self.colors {
+            builder = builder.colors(colors);
+        }
+        builder
+    }
 }
 
 pub fn load_ply_positions(path: &Path) -> Result<PlyPositions, PlyLoadError> {

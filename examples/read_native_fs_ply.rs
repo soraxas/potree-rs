@@ -3,12 +3,12 @@
 //! Run with:
 //! `cargo run --example read_native_fs_ply --features="convert fs tokio_dev" -- <path/to/file.ply> [scale]`
 
-use potree::convert::{build_potree_buffers, ply_loader::load_ply_positions};
+use potree::convert::ply_loader::load_ply_positions;
 use potree::octree::node::{iter_one_bits, NodeType};
 use potree::prelude::*;
+use std::collections::VecDeque;
 use std::env;
 use std::path::PathBuf;
-use std::collections::VecDeque;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -33,18 +33,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or("ply_cloud");
 
     tracing::info!("Converting to Potree buffers in memory");
-    let buffers = build_potree_buffers(
-        name,
-        "",
-        &ply.positions,
-        ply.colors.as_deref(),
-        [scale, scale, scale],
-        "DEFAULT",
-    )?;
+    let buffers = ply
+        .into_potree_builder()
+        .name(name.to_string())
+        .target_scale([scale, scale, scale])
+        .build()?;
 
-    let mut point_cloud =
-        PointCloud::from_buffers(name, buffers.metadata_json, buffers.hierarchy, buffers.octree)
-            .await?;
+    let mut point_cloud = PointCloud::from_buffers(
+        name,
+        buffers.metadata_json,
+        buffers.hierarchy,
+        buffers.octree,
+    )
+    .await?;
 
     let mut queue: VecDeque<_> = VecDeque::from([point_cloud.octree().root_id()]);
     let mut visited = 0usize;
@@ -70,11 +71,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         if node.node_type.has_points() {
             match point_cloud.load_points(node_id).await {
-                Ok(points) => tracing::info!(
-                    "Node {}: loaded {} points",
-                    node.name,
-                    points.points.len()
-                ),
+                Ok(points) => {
+                    tracing::info!("Node {}: loaded {} points", node.name, points.points.len())
+                }
                 Err(err) => tracing::error!("Failed to load points for {}: {err}", node.name),
             }
         }
