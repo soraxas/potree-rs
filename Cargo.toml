@@ -19,6 +19,11 @@ required-features = ["fs", "tokio_dev"]
 name = "read_native_fs"
 required-features = ["fs"]
 
+
+[[example]]
+name = "read_native_fs_ply"
+required-features = ["fs", "convert"]
+
 [[example]]
 path = "examples/read_native_http.rs"
 name = "read_native_ehttp"
@@ -67,7 +72,7 @@ wasm = ["ehttp", "dep:wasm-bindgen", "dep:wasm-bindgen-futures"]
 wasm_worker = ["ehttp_local", "dep:wasm-bindgen", "dep:wasm-bindgen-futures"]
 ehttp = ["dep:ehttp"]
 ehttp_local = ["ehttp", "wasm", "dep:wasm-bindgen-futures"]
-converter = ["dep:clap", "dep:ply-rs-bw"]
+convert = ["dep:clap", "dep:ply-rs-bw"]
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 getrandom = { version = "0.3.3", features = ["wasm_js"] }
@@ -78,4 +83,4 @@ opt-level = "s"
 
 [[bin]]
 name = "ply_to_potree"
-required-features = ["converter"]
+required-features = ["convert"]

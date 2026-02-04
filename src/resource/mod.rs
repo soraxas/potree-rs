@@ -4,6 +4,8 @@ mod ehttp;
 #[cfg(feature = "fs")]
 mod file;
 
+mod buffer;
+
 #[cfg(all(feature = "reqwest", not(any(feature = "wasm", feature = "ehttp"))))]
 mod reqwest;
 
@@ -16,6 +18,8 @@ use std::collections::BTreeMap;
 use std::marker::PhantomData;
 use std::sync::Arc;
 use url::Url;
+
+pub use buffer::BufferClient;
 
 #[derive(Clone, Debug)]
 pub struct ResourceLoader {
@@ -30,6 +34,8 @@ pub struct ResourceLoader {
 
     #[cfg(feature = "ehttp_local")]
     http: ehttp_local::EhttpClientLocal,
+
+    buffer: Option<buffer::BufferClient>,
 }
 
 impl Default for ResourceLoader {
@@ -51,8 +57,15 @@ impl ResourceLoader {
 
             #[cfg(feature = "ehttp_local")]
             http: ehttp_local::EhttpClientLocal::new(),
+            buffer: None,
         }
     }
+
+    pub fn with_buffer(mut self, buffer: buffer::BufferClient) -> Self {
+        self.buffer = Some(buffer);
+        self
+    }
+
     fn get_delegate(&'_ self, url: &str) -> Result<ErasedResourceClient<'_>, ResourceError> {
         if url.contains("://") {
             let parsed_url = Url::parse(url)?;
@@ -63,12 +76,22 @@ impl ResourceLoader {
                 "http" | "https" => Ok(ErasedResourceClient::Http(&self.http)),
                 #[cfg(feature = "fs")]
                 "file" => Ok(ErasedResourceClient::File(&self.file)),
+                "buffer" => {
+                    let buffer = self.buffer.as_ref().ok_or_else(|| ResourceError::Unsupported(
+                        "Memory backend not configured".to_string(),
+                    ))?;
+                    Ok(ErasedResourceClient::Memory(buffer))
+                },
                 _ => Err(ResourceError::Unsupported(format!(
-                    "Unknown scheme {}",
-                    scheme
+                    "Unknown scheme {scheme}"
                 ))),
             }
         } else {
+            if let Some(buffer) = &self.buffer {
+                if buffer.contains(url) {
+                    return Ok(ErasedResourceClient::Memory(buffer));
+                }
+            }
             #[cfg(feature = "fs")]
             {
                 Ok(ErasedResourceClient::File(&self.file))
@@ -172,6 +195,7 @@ pub enum ErasedResourceClient<'a> {
     Http(&'a ehttp::EhttpClient),
     #[cfg(feature = "ehttp_local")]
     Http(&'a ehttp_local::EhttpClientLocal),
+    Memory(&'a buffer::BufferClient),
     Phantom(&'a PhantomData<String>),
 }
 
@@ -188,6 +212,7 @@ impl ResourceClient for ErasedResourceClient<'_> {
             ErasedResourceClient::File(delegate) => delegate.get(url, headers).await,
             #[cfg(any(feature = "reqwest", feature = "ehttp", feature = "ehttp_local"))]
             ErasedResourceClient::Http(delegate) => delegate.get(url, headers).await,
+            ErasedResourceClient::Memory(delegate) => delegate.get(url, headers).await,
             _ => Err(ResourceError::Unsupported(
                 "Scheme not supported".to_string(),
             )),
@@ -211,6 +236,9 @@ impl ResourceClient for ErasedResourceClient<'_> {
             ErasedResourceClient::Http(delegate) => {
                 delegate.get_range(url, offset, length, headers).await
             }
+            ErasedResourceClient::Memory(delegate) => {
+                delegate.get_range(url, offset, length, headers).await
+            }
             _ => Err(ResourceError::Unsupported(
                 "Scheme not supported".to_string(),
             )),
@@ -228,6 +256,7 @@ impl ResourceClient for ErasedResourceClient<'_> {
             ErasedResourceClient::File(delegate) => delegate.get_json(url, headers).await,
             #[cfg(any(feature = "reqwest", feature = "ehttp", feature = "ehttp_local"))]
             ErasedResourceClient::Http(delegate) => delegate.get_json(url, headers).await,
+            ErasedResourceClient::Memory(delegate) => delegate.get_json(url, headers).await,
             _ => Err(ResourceError::Unsupported(
                 "Scheme not supported".to_string(),
             )),

@@ -2,10 +2,7 @@ use std::path::PathBuf;
 
 use clap::Parser;
 use potree::convert::ply_loader::load_ply_positions;
-use potree::convert::{
-    compute_scale_offset, estimate_spacing, write_metadata_json, write_octree_bin_positions,
-    write_single_root_hierarchy,
-};
+use potree::convert::build_potree_buffers;
 
 /// Convert a PLY file into Potree format (octree.bin, hierarchy.bin, metadata.json)
 #[derive(Debug, Parser)]
@@ -25,7 +22,7 @@ struct Args {
     projection: Option<String>,
 
     /// Uniform scale factor to apply to coordinates
-    #[arg(long, default_value_t = 0.001)]
+    #[arg(long, default_value_t = 1.0)]
     scale: f64,
 }
 
@@ -36,24 +33,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let output = args.output;
 
     let data = load_ply_positions(&input)?;
-    if data.positions.is_empty() {
-        return Err("PLY contains no vertices".into());
-    }
-
-    let mut min = [f64::INFINITY; 3];
-    let mut max = [f64::NEG_INFINITY; 3];
-
-    for p in &data.positions {
-        for i in 0..3 {
-            min[i] = min[i].min(p[i]);
-            max[i] = max[i].max(p[i]);
-        }
-    }
 
     let scale_arr = [args.scale, args.scale, args.scale];
-    let (scale, offset) = compute_scale_offset(min, max, scale_arr);
-    let points = data.positions.len() as u64;
-    let spacing = estimate_spacing(min, max, points);
 
     let name = args.name.unwrap_or_else(|| {
         input
@@ -65,31 +46,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     std::fs::create_dir_all(&output)?;
 
+    let buffers = build_potree_buffers(
+        &name,
+        &args.projection.unwrap_or_default(),
+        &data.positions,
+        data.colors.as_deref(),
+        scale_arr,
+        "DEFAULT",
+    )?;
+
     let octree_path = output.join("octree.bin");
     let hierarchy_path = output.join("hierarchy.bin");
     let metadata_path = output.join("metadata.json");
 
-    let byte_size = write_octree_bin_positions(
-        &octree_path,
-        &data.positions,
-        data.colors.as_deref(),
-        scale,
-        offset,
-    )?;
-    write_single_root_hierarchy(&hierarchy_path, points as u32, byte_size)?;
-    write_metadata_json(
-        &metadata_path,
-        &name,
-        &args.projection.unwrap_or_default(),
-        points,
-        min,
-        max,
-        scale,
-        offset,
-        spacing,
-        "DEFAULT",
-        data.colors.is_some(),
-    )?;
+    std::fs::write(&octree_path, &buffers.octree)?;
+    std::fs::write(&hierarchy_path, &buffers.hierarchy)?;
+    std::fs::write(&metadata_path, &buffers.metadata_json)?;
 
     println!("Wrote Potree output to {}", output.display());
 

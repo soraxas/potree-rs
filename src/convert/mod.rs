@@ -19,6 +19,13 @@ pub enum ConvertError {
 
 pub const HIERARCHY_BYTES_PER_NODE: usize = 22;
 
+#[derive(Debug, Clone)]
+pub struct PotreeBuffers {
+    pub metadata_json: Vec<u8>,
+    pub hierarchy: Vec<u8>,
+    pub octree: Vec<u8>,
+}
+
 pub fn compute_scale_offset(
     min: [f64; 3],
     max: [f64; 3],
@@ -57,16 +64,13 @@ pub fn estimate_spacing(min: [f64; 3], max: [f64; 3], points: u64) -> f64 {
     (volume / points as f64).cbrt()
 }
 
-pub fn write_octree_bin_positions(
-    path: &Path,
+fn write_octree_bin_positions_impl<W: Write>(
+    writer: &mut W,
     positions: &[[f64; 3]],
     colors: Option<&[[u16; 3]]>,
     scale: [f64; 3],
     offset: [f64; 3],
 ) -> Result<u64, ConvertError> {
-    let file = File::create(path)?;
-    let mut writer = BufWriter::new(file);
-
     let write_color = colors.is_some();
 
     for (idx, p) in positions.iter().enumerate() {
@@ -90,10 +94,35 @@ pub fn write_octree_bin_positions(
         }
     }
 
-    writer.flush()?;
-
     let bytes_per_point = if write_color { 18 } else { 12 };
     Ok((positions.len() * bytes_per_point) as u64)
+}
+
+pub fn write_octree_bin_positions(
+    path: &Path,
+    positions: &[[f64; 3]],
+    colors: Option<&[[u16; 3]]>,
+    scale: [f64; 3],
+    offset: [f64; 3],
+) -> Result<u64, ConvertError> {
+    let file = File::create(path)?;
+    let mut writer = BufWriter::new(file);
+
+    let byte_size = write_octree_bin_positions_impl(&mut writer, positions, colors, scale, offset)?;
+    writer.flush()?;
+
+    Ok(byte_size)
+}
+
+pub fn build_octree_bin_positions(
+    positions: &[[f64; 3]],
+    colors: Option<&[[u16; 3]]>,
+    scale: [f64; 3],
+    offset: [f64; 3],
+) -> Result<(Vec<u8>, u64), ConvertError> {
+    let mut buffer = Vec::new();
+    let byte_size = write_octree_bin_positions_impl(&mut buffer, positions, colors, scale, offset)?;
+    Ok((buffer, byte_size))
 }
 
 pub fn write_single_root_hierarchy(
@@ -101,6 +130,17 @@ pub fn write_single_root_hierarchy(
     num_points: u32,
     byte_size: u64,
 ) -> Result<(), ConvertError> {
+    let data = build_single_root_hierarchy(num_points, byte_size)?;
+    let mut file = File::create(path)?;
+    file.write_all(&data)?;
+
+    Ok(())
+}
+
+pub fn build_single_root_hierarchy(
+    num_points: u32,
+    byte_size: u64,
+) -> Result<Vec<u8>, ConvertError> {
     let mut data = Vec::with_capacity(HIERARCHY_BYTES_PER_NODE);
 
     let node_type: u8 = 1; // LEAF
@@ -113,10 +153,7 @@ pub fn write_single_root_hierarchy(
     data.write_u64::<LittleEndian>(byte_offset)?;
     data.write_u64::<LittleEndian>(byte_size)?;
 
-    let mut file = File::create(path)?;
-    file.write_all(&data)?;
-
-    Ok(())
+    Ok(data)
 }
 
 pub fn write_metadata_json(
@@ -132,6 +169,32 @@ pub fn write_metadata_json(
     encoding: &str,
     has_color: bool,
 ) -> Result<(), ConvertError> {
+    let content = build_metadata_json(
+        name, projection, points, min, max, scale, offset, spacing, encoding, has_color,
+    )?;
+
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let mut file = File::create(path)?;
+    file.write_all(&content)?;
+
+    Ok(())
+}
+
+pub fn build_metadata_json(
+    name: &str,
+    projection: &str,
+    points: u64,
+    min: [f64; 3],
+    max: [f64; 3],
+    scale: [f64; 3],
+    offset: [f64; 3],
+    spacing: f64,
+    encoding: &str,
+    has_color: bool,
+) -> Result<Vec<u8>, ConvertError> {
     let mut attributes = vec![json!({
         "name": "position",
         "description": "",
@@ -180,16 +243,9 @@ pub fn write_metadata_json(
         "attributes": attributes
     });
 
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-
-    let mut file = File::create(path)?;
-    let content = serde_json::to_string_pretty(&metadata)
+    let content = serde_json::to_vec_pretty(&metadata)
         .map_err(|err| ConvertError::InvalidInput(err.to_string()))?;
-    file.write_all(content.as_bytes())?;
-
-    Ok(())
+    Ok(content)
 }
 
 fn quantize_i32(value: f64, scale: f64, offset: f64) -> i32 {
@@ -206,4 +262,53 @@ fn quantize_i32(value: f64, scale: f64, offset: f64) -> i32 {
     } else {
         rounded as i32
     }
+}
+
+pub fn build_potree_buffers(
+    name: &str,
+    projection: &str,
+    positions: &[[f64; 3]],
+    colors: Option<&[[u16; 3]]>,
+    target_scale: [f64; 3],
+    encoding: &str,
+) -> Result<PotreeBuffers, ConvertError> {
+    if positions.is_empty() {
+        return Err(ConvertError::InvalidInput("no positions provided".to_string()));
+    }
+
+    let mut min = [f64::INFINITY; 3];
+    let mut max = [f64::NEG_INFINITY; 3];
+
+    for p in positions {
+        for i in 0..3 {
+            min[i] = min[i].min(p[i]);
+            max[i] = max[i].max(p[i]);
+        }
+    }
+
+    let (scale, offset) = compute_scale_offset(min, max, target_scale);
+    let points = positions.len() as u64;
+    let spacing = estimate_spacing(min, max, points);
+
+    let (octree, byte_size) =
+        build_octree_bin_positions(positions, colors, scale, offset)?;
+    let hierarchy = build_single_root_hierarchy(points as u32, byte_size)?;
+    let metadata_json = build_metadata_json(
+        name,
+        projection,
+        points,
+        min,
+        max,
+        scale,
+        offset,
+        spacing,
+        encoding,
+        colors.is_some(),
+    )?;
+
+    Ok(PotreeBuffers {
+        metadata_json,
+        hierarchy,
+        octree,
+    })
 }

@@ -3,7 +3,7 @@ use crate::metadata::{LoadPointsError, Points};
 use crate::octree::node::{iter_one_bits, NodeType, OctreeNode};
 use crate::octree::snapshot::OctreeNodeSnapshot;
 use crate::octree::{NodeId, Octree};
-use crate::resource::{ResourceError, ResourceLoader};
+use crate::resource::{BufferClient, ResourceError, ResourceLoader};
 use binrw::prelude::*;
 use thiserror::Error;
 
@@ -68,6 +68,23 @@ impl PointCloud {
         this.load_initial_hierarchy().await?;
 
         Ok(this)
+    }
+
+    /// Build a point cloud from in-memory Potree buffers.
+    /// The `name` is used as the base path (e.g. `name/metadata.json`).
+    pub async fn from_buffers(
+        name: &str,
+        metadata_json: Vec<u8>,
+        hierarchy_bin: Vec<u8>,
+        octree_bin: Vec<u8>,
+    ) -> Result<PointCloud, LoadPotreePointCloudError> {
+        let mem = BufferClient::from_entries([
+            (format!("{name}/metadata.json"), metadata_json),
+            (format!("{name}/hierarchy.bin"), hierarchy_bin),
+            (format!("{name}/octree.bin"), octree_bin),
+        ]);
+
+        Self::from_url(name, ResourceLoader::new().with_buffer(mem)).await
     }
 
     async fn load_initial_hierarchy(&mut self) -> Result<(), ReadHierarchyError> {

@@ -1,4 +1,4 @@
-#[cfg(feature = "converter")]
+#[cfg(feature = "convert")]
 pub mod convert;
 pub mod hierarchy;
 pub mod metadata;

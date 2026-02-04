@@ -71,7 +71,7 @@ fn extract_positions(ply: &Ply<DefaultElement>) -> Result<PlyPositions, PlyLoadE
             },
             Ok(None) => {}
             Err(e) => {
-                eprintln!("Error extracting color: {}", e);
+                eprintln!("Error extracting color: {e}");
                 // If there's an error extracting color, should we discard all colors?
             }
         }
@@ -89,7 +89,7 @@ fn prop_as_f64(prop: &Property) -> Result<f64, PlyLoadError> {
         Property::Int(v) => Ok(*v as f64),
         Property::UInt(v) => Ok(*v as f64),
         Property::Float(v) => Ok(*v as f64),
-        Property::Double(v) => Ok(*v as f64),
+        Property::Double(v) => Ok(*v),
         Property::ListInt(_) => Err(PlyLoadError::MissingPosition),
         Property::ListUInt(_) => Err(PlyLoadError::MissingPosition),
         Property::ListFloat(_) => Err(PlyLoadError::MissingPosition),
@@ -123,8 +123,8 @@ fn prop_as_u16_color(prop: &Property) -> Result<u16, PlyLoadError> {
         Property::Char(v) => Ok((*v as i16).clamp(0, 255) as u16 * 257),
         Property::UShort(v) => Ok(*v),
         Property::Short(v) => Ok((*v as i32).clamp(0, u16::MAX as i32) as u16),
-        Property::UInt(v) => Ok((*v as u32).min(u16::MAX as u32) as u16),
-        Property::Int(v) => Ok((*v as i32).clamp(0, u16::MAX as i32) as u16),
+        Property::UInt(v) => Ok((*v).min(u16::MAX as u32) as u16),
+        Property::Int(v) => Ok((*v).clamp(0, u16::MAX as i32) as u16),
         Property::Float(v) => Ok((*v as f64).round().clamp(0.0, u16::MAX as f64) as u16),
         Property::Double(v) => Ok((*v).round().clamp(0.0, u16::MAX as f64) as u16),
         _ => Err(PlyLoadError::MissingPosition),
