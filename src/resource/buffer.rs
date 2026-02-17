@@ -1,35 +1,75 @@
 use super::{ResourceClient, ResourceError};
 use async_trait::async_trait;
+#[cfg(feature = "convert")]
+use std::collections::VecDeque;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
-use std::fs::{self, File};
-use std::io::{BufWriter, Write};
-use std::path::Path;
-
+#[cfg(feature = "convert")]
 use byteorder::{LittleEndian, WriteBytesExt};
+#[cfg(feature = "convert")]
+use rand::{rngs::StdRng, Rng, SeedableRng};
+#[cfg(feature = "convert")]
 use serde_json::json;
+#[cfg(feature = "convert")]
 use thiserror::Error;
 
+#[cfg(feature = "convert")]
+use std::fs::{self, File};
+#[cfg(feature = "convert")]
+use std::io::{BufWriter, Write};
+#[cfg(feature = "convert")]
+use std::path::Path;
+
+#[cfg(feature = "convert")]
 /// A collection of Potree buffers in memory.
-// #[derive(Debug)]
 pub struct PotreeBuffers {
     pub metadata_json: Vec<u8>,
     pub hierarchy: Vec<u8>,
     pub octree: Vec<u8>,
 }
 
+/// Options for building Potree buffers.
+#[cfg(feature = "convert")]
+#[derive(Clone, Debug)]
+pub struct BuildOptions {
+    pub target_scale: [f64; 3],
+    pub encoding: String,
+    pub max_points_per_node: usize,
+    pub max_depth: u32,
+    pub seed: Option<u64>,
+}
+
+#[cfg(feature = "convert")]
+impl Default for BuildOptions {
+    fn default() -> Self {
+        Self {
+            // default to millimeter-scale quantization to avoid coarse grids
+            target_scale: [0.001, 0.001, 0.001],
+            encoding: "DEFAULT".to_string(),
+            max_points_per_node: usize::MAX,
+            max_depth: 20,
+            seed: None,
+        }
+    }
+}
+
 /// A builder for `PotreeBuffers`.
+#[cfg(feature = "convert")]
 #[derive(Debug, Clone, Default)]
 pub struct PotreeBuilder {
     pointcloud_name: Option<String>,
     positions: Option<Vec<[f64; 3]>>,
     colors: Option<Vec<[u16; 3]>>,
     projection: Option<String>,
-    encoding: Option<String>,
     target_scale: Option<[f64; 3]>,
+    encoding: Option<String>,
+    max_points_per_node: Option<usize>,
+    max_depth: Option<u32>,
+    seed: Option<u64>,
 }
 
+#[cfg(feature = "convert")]
 impl PotreeBuilder {
     pub fn new() -> Self {
         Self::default()
@@ -65,6 +105,21 @@ impl PotreeBuilder {
         self
     }
 
+    pub fn max_points_per_node(mut self, max_points: usize) -> Self {
+        self.max_points_per_node = Some(max_points);
+        self
+    }
+
+    pub fn max_depth(mut self, max_depth: u32) -> Self {
+        self.max_depth = Some(max_depth);
+        self
+    }
+
+    pub fn seed(mut self, seed: u64) -> Self {
+        self.seed = Some(seed);
+        self
+    }
+
     pub fn build(self) -> Result<PotreeBuffers, ConvertError> {
         let positions = if let Some(positions) = self.positions {
             if positions.is_empty() {
@@ -79,17 +134,30 @@ impl PotreeBuilder {
             ));
         };
         let pointcloud_name = self.pointcloud_name.as_deref().unwrap_or("pointcloud");
-        build_potree_buffers(
+        let mut options = BuildOptions::default();
+        options.target_scale = self.target_scale.unwrap_or([0.001, 0.001, 0.001]);
+        if let Some(encoding) = self.encoding {
+            options.encoding = encoding;
+        }
+        if let Some(max_points) = self.max_points_per_node {
+            options.max_points_per_node = max_points;
+        }
+        if let Some(max_depth) = self.max_depth {
+            options.max_depth = max_depth;
+        }
+        options.seed = self.seed;
+
+        build_potree_buffers_with_options(
             pointcloud_name,
             self.projection.as_deref().unwrap_or(""),
             &positions,
             self.colors.as_deref(),
-            self.target_scale.unwrap_or([1.0, 1.0, 1.0]),
-            self.encoding.as_deref().unwrap_or("DEFAULT"),
+            &options,
         )
     }
 }
 
+#[cfg(feature = "convert")]
 #[derive(Debug, Error)]
 pub enum ConvertError {
     #[error("io error: {0}")]
@@ -99,9 +167,11 @@ pub enum ConvertError {
     InvalidInput(String),
 }
 
+#[cfg(feature = "convert")]
 pub const HIERARCHY_BYTES_PER_NODE: usize = 22;
 
 /// Compute the scale and offset for the given minimum and maximum values.
+#[cfg(feature = "convert")]
 pub fn compute_scale_offset(
     min: [f64; 3],
     max: [f64; 3],
@@ -127,6 +197,7 @@ pub fn compute_scale_offset(
 }
 
 /// Estimate the spacing for the given minimum and maximum values and number of points.
+#[cfg(feature = "convert")]
 pub fn estimate_spacing(min: [f64; 3], max: [f64; 3], points: u64) -> f64 {
     if points == 0 {
         return 0.0;
@@ -141,6 +212,7 @@ pub fn estimate_spacing(min: [f64; 3], max: [f64; 3], points: u64) -> f64 {
     (volume / points as f64).cbrt()
 }
 
+#[cfg(feature = "convert")]
 fn write_octree_bin_positions_impl<W: Write>(
     writer: &mut W,
     positions: &[[f64; 3]],
@@ -175,6 +247,7 @@ fn write_octree_bin_positions_impl<W: Write>(
     Ok((positions.len() * bytes_per_point) as u64)
 }
 
+#[cfg(feature = "convert")]
 pub fn write_octree_bin_positions(
     path: &Path,
     positions: &[[f64; 3]],
@@ -191,6 +264,7 @@ pub fn write_octree_bin_positions(
     Ok(byte_size)
 }
 
+#[cfg(feature = "convert")]
 pub fn build_octree_bin_positions(
     positions: &[[f64; 3]],
     colors: Option<&[[u16; 3]]>,
@@ -202,21 +276,24 @@ pub fn build_octree_bin_positions(
     Ok((buffer, byte_size))
 }
 
+#[cfg(feature = "convert")]
 pub fn write_single_root_hierarchy(
     path: &Path,
     num_points: u32,
     byte_size: u64,
 ) -> Result<(), ConvertError> {
-    let data = build_single_root_hierarchy(num_points, byte_size)?;
+    let data = build_single_root_hierarchy(num_points, byte_size, 0)?;
     let mut file = File::create(path)?;
     file.write_all(&data)?;
 
     Ok(())
 }
 
+#[cfg(feature = "convert")]
 pub fn build_single_root_hierarchy(
     num_points: u32,
     byte_size: u64,
+    _depth: u32,
 ) -> Result<Vec<u8>, ConvertError> {
     let mut data = Vec::with_capacity(HIERARCHY_BYTES_PER_NODE);
 
@@ -230,9 +307,11 @@ pub fn build_single_root_hierarchy(
     data.write_u64::<LittleEndian>(byte_offset)?;
     data.write_u64::<LittleEndian>(byte_size)?;
 
+    // depth is not encoded per node; returned via metadata
     Ok(data)
 }
 
+#[cfg(feature = "convert")]
 pub fn write_metadata_json(
     path: &Path,
     name: &str,
@@ -245,9 +324,22 @@ pub fn write_metadata_json(
     spacing: f64,
     encoding: &str,
     has_color: bool,
+    depth: u32,
+    hierarchy_bytes: usize,
 ) -> Result<(), ConvertError> {
     let content = build_metadata_json(
-        name, projection, points, min, max, scale, offset, spacing, encoding, has_color,
+        name,
+        projection,
+        points,
+        min,
+        max,
+        scale,
+        offset,
+        spacing,
+        encoding,
+        has_color,
+        depth,
+        hierarchy_bytes,
     )?;
 
     if let Some(parent) = path.parent() {
@@ -260,6 +352,7 @@ pub fn write_metadata_json(
     Ok(())
 }
 
+#[cfg(feature = "convert")]
 pub fn build_metadata_json(
     name: &str,
     projection: &str,
@@ -271,6 +364,8 @@ pub fn build_metadata_json(
     spacing: f64,
     encoding: &str,
     has_color: bool,
+    depth: u32,
+    hierarchy_bytes: usize,
 ) -> Result<Vec<u8>, ConvertError> {
     let mut attributes = vec![json!({
         "name": "position",
@@ -305,9 +400,9 @@ pub fn build_metadata_json(
         "points": points,
         "projection": projection,
         "hierarchy": {
-            "firstChunkSize": HIERARCHY_BYTES_PER_NODE,
+            "firstChunkSize": hierarchy_bytes,
             "stepSize": 5,
-            "depth": 0
+            "depth": depth
         },
         "offset": [offset[0], offset[1], offset[2]],
         "scale": [scale[0], scale[1], scale[2]],
@@ -325,6 +420,7 @@ pub fn build_metadata_json(
     Ok(content)
 }
 
+#[cfg(feature = "convert")]
 fn quantize_i32(value: f64, scale: f64, offset: f64) -> i32 {
     if scale == 0.0 {
         return 0;
@@ -341,13 +437,151 @@ fn quantize_i32(value: f64, scale: f64, offset: f64) -> i32 {
     }
 }
 
-fn build_potree_buffers(
+#[cfg(feature = "convert")]
+pub fn build_potree_buffers(
     name: &str,
     projection: &str,
     positions: &[[f64; 3]],
     colors: Option<&[[u16; 3]]>,
     target_scale: [f64; 3],
     encoding: &str,
+) -> Result<PotreeBuffers, ConvertError> {
+    build_potree_buffers_with_options(
+        name,
+        projection,
+        positions,
+        colors,
+        &BuildOptions {
+            target_scale,
+            encoding: encoding.to_string(),
+            ..Default::default()
+        },
+    )
+}
+
+#[cfg(feature = "convert")]
+#[derive(Clone, Debug)]
+struct WorkingNode {
+    name: String,
+    level: u32,
+    min: [f64; 3],
+    max: [f64; 3],
+    points: Vec<usize>,
+    stored_points: Vec<usize>,
+    children: [Option<usize>; 8],
+    child_mask: u8,
+    byte_offset: u64,
+    byte_size: u64,
+}
+
+#[cfg(feature = "convert")]
+fn child_bounds(min: [f64; 3], max: [f64; 3], index: u8) -> ([f64; 3], [f64; 3]) {
+    let mut child_min = min;
+    let mut child_max = max;
+    let size = [
+        (max[0] - min[0]) * 0.5,
+        (max[1] - min[1]) * 0.5,
+        (max[2] - min[2]) * 0.5,
+    ];
+
+    if (index & 0b0001) > 0 {
+        child_min[2] += size[2];
+    } else {
+        child_max[2] -= size[2];
+    }
+    if (index & 0b0010) > 0 {
+        child_min[1] += size[1];
+    } else {
+        child_max[1] -= size[1];
+    }
+    if (index & 0b0100) > 0 {
+        child_min[0] += size[0];
+    } else {
+        child_max[0] -= size[0];
+    }
+
+    (child_min, child_max)
+}
+
+#[cfg(feature = "convert")]
+fn child_index_for_point(p: [f64; 3], center: [f64; 3]) -> u8 {
+    let mut idx = 0;
+    if p[2] >= center[2] {
+        idx |= 0b0001;
+    }
+    if p[1] >= center[1] {
+        idx |= 0b0010;
+    }
+    if p[0] >= center[0] {
+        idx |= 0b0100;
+    }
+    idx
+}
+
+#[cfg(feature = "convert")]
+fn sample_indices(indices: &[usize], max_points: usize, rng: &mut impl Rng) -> Vec<usize> {
+    if indices.len() <= max_points {
+        return indices.to_vec();
+    }
+
+    let mut reservoir = Vec::with_capacity(max_points);
+    for (i, &idx) in indices.iter().enumerate() {
+        if i < max_points {
+            reservoir.push(idx);
+        } else {
+            let j = rng.gen_range(0..=i);
+            if j < max_points {
+                reservoir[j] = idx;
+            }
+        }
+    }
+    reservoir
+}
+
+#[cfg(feature = "convert")]
+fn write_points_by_index<W: Write>(
+    writer: &mut W,
+    positions: &[[f64; 3]],
+    colors: Option<&[[u16; 3]]>,
+    indices: &[usize],
+    scale: [f64; 3],
+    offset: [f64; 3],
+) -> Result<u64, ConvertError> {
+    let write_color = colors.is_some();
+    for &idx in indices {
+        let p = positions
+            .get(idx)
+            .ok_or_else(|| ConvertError::InvalidInput("index out of bounds".to_string()))?;
+        let ix = quantize_i32(p[0], scale[0], offset[0]);
+        let iy = quantize_i32(p[1], scale[1], offset[1]);
+        let iz = quantize_i32(p[2], scale[2], offset[2]);
+
+        writer.write_i32::<LittleEndian>(ix)?;
+        writer.write_i32::<LittleEndian>(iy)?;
+        writer.write_i32::<LittleEndian>(iz)?;
+
+        if write_color {
+            let colors = colors
+                .ok_or_else(|| ConvertError::InvalidInput("missing colors array".to_string()))?;
+            let [r, g, b] = colors
+                .get(idx)
+                .ok_or_else(|| ConvertError::InvalidInput("color count mismatch".to_string()))?;
+            writer.write_u16::<LittleEndian>(*r)?;
+            writer.write_u16::<LittleEndian>(*g)?;
+            writer.write_u16::<LittleEndian>(*b)?;
+        }
+    }
+    let bytes_per_point = if write_color { 18 } else { 12 };
+    Ok((indices.len() * bytes_per_point) as u64)
+}
+
+#[cfg(feature = "convert")]
+pub fn build_potree_buffers_with_options(
+    name: &str,
+    projection: &str,
+    positions: &[[f64; 3]],
+    colors: Option<&[[u16; 3]]>,
+    options: &BuildOptions,
 ) -> Result<PotreeBuffers, ConvertError> {
     if positions.is_empty() {
         return Err(ConvertError::InvalidInput(
@@ -365,12 +599,125 @@ fn build_potree_buffers(
         }
     }
 
-    let (scale, offset) = compute_scale_offset(min, max, target_scale);
+    let (scale, offset) = compute_scale_offset(min, max, options.target_scale);
     let points = positions.len() as u64;
     let spacing = estimate_spacing(min, max, points);
 
-    let (octree, byte_size) = build_octree_bin_positions(positions, colors, scale, offset)?;
-    let hierarchy = build_single_root_hierarchy(points as u32, byte_size)?;
+    let mut rng = options
+        .seed
+        .map(StdRng::seed_from_u64)
+        .unwrap_or_else(StdRng::from_entropy);
+
+    let mut nodes: Vec<WorkingNode> = Vec::new();
+    nodes.push(WorkingNode {
+        name: "r".to_string(),
+        level: 0,
+        min,
+        max,
+        points: (0..positions.len()).collect(),
+        stored_points: Vec::new(),
+        children: [None; 8],
+        child_mask: 0,
+        byte_offset: 0,
+        byte_size: 0,
+    });
+
+    let mut queue = VecDeque::from([0usize]);
+    let mut max_depth_seen = 0u32;
+
+    while let Some(node_idx) = queue.pop_front() {
+        let child_limit = options.max_points_per_node;
+        let max_depth = options.max_depth;
+
+        let mut child_buckets: [_; 8] = std::array::from_fn(|_| Vec::new());
+        let center = [
+            (nodes[node_idx].min[0] + nodes[node_idx].max[0]) * 0.5,
+            (nodes[node_idx].min[1] + nodes[node_idx].max[1]) * 0.5,
+            (nodes[node_idx].min[2] + nodes[node_idx].max[2]) * 0.5,
+        ];
+
+        if nodes[node_idx].points.len() >= child_limit && nodes[node_idx].level < max_depth {
+            for &idx in &nodes[node_idx].points {
+                let p = positions[idx];
+                let child = child_index_for_point(p, center);
+                child_buckets[child as usize].push(idx);
+            }
+        }
+
+        let mut child_mask = 0u8;
+        let mut child_indices: [Option<usize>; 8] = [None; 8];
+        let mut created_children = 0usize;
+
+        for (child_idx, bucket) in child_buckets.into_iter().enumerate() {
+            if bucket.is_empty() {
+                continue;
+            }
+            child_mask |= 1 << child_idx;
+            let (cmin, cmax) =
+                child_bounds(nodes[node_idx].min, nodes[node_idx].max, child_idx as u8);
+            let child_node_idx = nodes.len();
+            nodes.push(WorkingNode {
+                name: format!("{}{}", nodes[node_idx].name, child_idx),
+                level: nodes[node_idx].level + 1,
+                min: cmin,
+                max: cmax,
+                points: bucket,
+                stored_points: Vec::new(),
+                children: [None; 8],
+                child_mask: 0,
+                byte_offset: 0,
+                byte_size: 0,
+            });
+            child_indices[child_idx] = Some(child_node_idx);
+            queue.push_back(child_node_idx);
+            created_children += 1;
+        }
+
+        nodes[node_idx].child_mask = child_mask;
+        nodes[node_idx].children = child_indices;
+
+        // sample points to store at this node (LOD). If no children, keep everything up to limit.
+        let stored = if child_mask == 0 && nodes[node_idx].points.len() <= child_limit {
+            nodes[node_idx].points.clone()
+        } else {
+            sample_indices(&nodes[node_idx].points, child_limit, &mut rng)
+        };
+        nodes[node_idx].stored_points = stored;
+        max_depth_seen = max_depth_seen.max(nodes[node_idx].level);
+
+        // Avoid infinite splitting when all points fall into a single child
+        if child_mask == 0 && created_children == 0 {
+            continue;
+        }
+    }
+
+    let write_color = colors.is_some();
+    let bytes_per_point = if write_color { 18 } else { 12 };
+    let mut octree = Vec::with_capacity(
+        nodes.iter().map(|n| n.stored_points.len()).sum::<usize>() * bytes_per_point,
+    );
+    let mut hierarchy = Vec::with_capacity(nodes.len() * HIERARCHY_BYTES_PER_NODE);
+
+    let mut current_offset = 0u64;
+    for node in &mut nodes {
+        node.byte_offset = current_offset;
+        node.byte_size = write_points_by_index(
+            &mut octree,
+            positions,
+            colors,
+            &node.stored_points,
+            scale,
+            offset,
+        )?;
+        current_offset += node.byte_size;
+
+        hierarchy.write_u8(if node.child_mask > 0 { 0 } else { 1 })?;
+        hierarchy.write_u8(node.child_mask)?;
+        hierarchy.write_u32::<LittleEndian>(node.stored_points.len() as u32)?;
+        hierarchy.write_u64::<LittleEndian>(node.byte_offset)?;
+        hierarchy.write_u64::<LittleEndian>(node.byte_size)?;
+    }
+
     let metadata_json = build_metadata_json(
         name,
         projection,
@@ -380,8 +727,10 @@ fn build_potree_buffers(
         scale,
         offset,
         spacing,
-        encoding,
+        &options.encoding,
         colors.is_some(),
+        max_depth_seen,
+        hierarchy.len(),
     )?;
 
     Ok(PotreeBuffers {

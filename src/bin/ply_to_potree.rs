@@ -21,8 +21,20 @@ struct Args {
     projection: Option<String>,
 
     /// Uniform scale factor to apply to coordinates
-    #[arg(long, default_value_t = 1.0)]
+    #[arg(long, default_value_t = 0.001)]
     scale: f64,
+
+    /// Maximum number of points to keep in each node (before splitting or sampling)
+    #[arg(long, default_value_t = 100_000)]
+    max_points_per_node: usize,
+
+    /// Maximum octree depth
+    #[arg(long, default_value_t = 20)]
+    max_depth: u32,
+
+    /// Optional RNG seed for reproducible sampling
+    #[arg(long)]
+    seed: Option<u64>,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -48,7 +60,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut builder = data
         .into_potree_builder()
         .name(name)
-        .target_scale(scale_arr);
+        .target_scale(scale_arr)
+        .max_points_per_node(args.max_points_per_node)
+        .max_depth(args.max_depth);
+    if let Some(seed) = args.seed {
+        builder = builder.seed(seed);
+    }
     if let Some(projection) = args.projection {
         builder = builder.projection(projection);
     }
