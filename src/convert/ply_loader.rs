@@ -1,5 +1,5 @@
 use std::fs::File;
-use std::io::{BufReader, Read};
+use std::io::BufReader;
 use std::path::Path;
 
 use ply_rs_bw::{
@@ -42,12 +42,8 @@ impl PlyPositions {
 }
 
 pub fn load_ply_positions(path: &Path) -> Result<PlyPositions, PlyLoadError> {
-    let mut file = File::open(path)?;
-    let mut data = Vec::new();
-    file.read_to_end(&mut data)?;
-
-    let mut cursor = std::io::Cursor::new(data);
-    let mut reader = BufReader::new(&mut cursor);
+    let file = File::open(path)?;
+    let mut reader = BufReader::new(file);
 
     let parser = Parser::<DefaultElement>::new();
     let ply = parser

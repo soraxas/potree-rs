@@ -35,6 +35,7 @@ struct Args {
     /// Optional RNG seed for reproducible sampling
     #[arg(long)]
     seed: Option<u64>,
+
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -42,8 +43,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let input = args.input;
     let output = args.output;
-
-    let data = load_ply_positions(&input)?;
 
     let scale_arr = [args.scale, args.scale, args.scale];
 
@@ -57,6 +56,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     std::fs::create_dir_all(&output)?;
 
+    let data = load_ply_positions(&input)?;
     let mut builder = data
         .into_potree_builder()
         .name(name)

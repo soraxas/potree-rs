@@ -6,13 +6,15 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 #[cfg(feature = "convert")]
-use byteorder::{LittleEndian, WriteBytesExt};
+use byteorder::{ByteOrder, LittleEndian, WriteBytesExt};
 #[cfg(feature = "convert")]
 use rand::{rngs::StdRng, Rng, SeedableRng};
 #[cfg(feature = "convert")]
 use serde_json::json;
 #[cfg(feature = "convert")]
 use thiserror::Error;
+#[cfg(feature = "convert")]
+use rayon::prelude::*;
 
 #[cfg(feature = "convert")]
 use std::fs::{self, File};
@@ -271,9 +273,40 @@ pub fn build_octree_bin_positions(
     scale: [f64; 3],
     offset: [f64; 3],
 ) -> Result<(Vec<u8>, u64), ConvertError> {
-    let mut buffer = Vec::new();
-    let byte_size = write_octree_bin_positions_impl(&mut buffer, positions, colors, scale, offset)?;
-    Ok((buffer, byte_size))
+    let write_color = colors.is_some();
+    let bytes_per_point = if write_color { 18 } else { 12 };
+    let mut buffer = vec![0u8; positions.len() * bytes_per_point];
+
+    buffer
+        .par_chunks_mut(bytes_per_point)
+        .enumerate()
+        .try_for_each(|(idx, chunk)| -> Result<(), ConvertError> {
+            let p = positions
+                .get(idx)
+                .ok_or_else(|| ConvertError::InvalidInput("index out of bounds".to_string()))?;
+            let ix = quantize_i32(p[0], scale[0], offset[0]);
+            let iy = quantize_i32(p[1], scale[1], offset[1]);
+            let iz = quantize_i32(p[2], scale[2], offset[2]);
+
+            LittleEndian::write_i32(&mut chunk[0..4], ix);
+            LittleEndian::write_i32(&mut chunk[4..8], iy);
+            LittleEndian::write_i32(&mut chunk[8..12], iz);
+
+            if write_color {
+                let colors = colors.ok_or_else(|| {
+                    ConvertError::InvalidInput("missing colors array".to_string())
+                })?;
+                let [r, g, b] = colors
+                    .get(idx)
+                    .ok_or_else(|| ConvertError::InvalidInput("color count mismatch".to_string()))?;
+                LittleEndian::write_u16(&mut chunk[12..14], *r);
+                LittleEndian::write_u16(&mut chunk[14..16], *g);
+                LittleEndian::write_u16(&mut chunk[16..18], *b);
+            }
+            Ok(())
+        })?;
+
+    Ok((buffer, (positions.len() * bytes_per_point) as u64))
 }
 
 #[cfg(feature = "convert")]
@@ -636,8 +669,10 @@ pub fn build_potree_buffers_with_options(
             (nodes[node_idx].min[2] + nodes[node_idx].max[2]) * 0.5,
         ];
 
-        if nodes[node_idx].points.len() >= child_limit && nodes[node_idx].level < max_depth {
-            for &idx in &nodes[node_idx].points {
+        let current_points = std::mem::take(&mut nodes[node_idx].points);
+
+        if current_points.len() >= child_limit && nodes[node_idx].level < max_depth {
+            for &idx in &current_points {
                 let p = positions[idx];
                 let child = child_index_for_point(p, center);
                 child_buckets[child as usize].push(idx);
@@ -677,10 +712,10 @@ pub fn build_potree_buffers_with_options(
         nodes[node_idx].children = child_indices;
 
         // sample points to store at this node (LOD). If no children, keep everything up to limit.
-        let stored = if child_mask == 0 && nodes[node_idx].points.len() <= child_limit {
-            nodes[node_idx].points.clone()
+        let stored = if child_mask == 0 && current_points.len() <= child_limit {
+            current_points
         } else {
-            sample_indices(&nodes[node_idx].points, child_limit, &mut rng)
+            sample_indices(&current_points, child_limit, &mut rng)
         };
         nodes[node_idx].stored_points = stored;
         max_depth_seen = max_depth_seen.max(nodes[node_idx].level);
