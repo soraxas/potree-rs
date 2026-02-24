@@ -373,6 +373,7 @@ pub fn write_metadata_json(
         has_color,
         depth,
         hierarchy_bytes,
+        &[],
     )?;
 
     if let Some(parent) = path.parent() {
@@ -399,6 +400,7 @@ pub fn build_metadata_json(
     has_color: bool,
     depth: u32,
     hierarchy_bytes: usize,
+    extra_attrs: &[serde_json::Value],
 ) -> Result<Vec<u8>, ConvertError> {
     let mut attributes = vec![json!({
         "name": "position",
@@ -425,6 +427,8 @@ pub fn build_metadata_json(
             "max": [65535, 65535, 65535]
         }));
     }
+
+    attributes.extend_from_slice(extra_attrs);
 
     let metadata = json!({
         "version": "2.0",
@@ -766,6 +770,7 @@ pub fn build_potree_buffers_with_options(
         colors.is_some(),
         max_depth_seen,
         hierarchy.len(),
+        &[],
     )?;
 
     Ok(PotreeBuffers {

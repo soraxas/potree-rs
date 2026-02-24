@@ -3,3 +3,4 @@ pub use crate::resource::buffer::{
     estimate_spacing, BuildOptions, ConvertError, PotreeBuffers, PotreeBuilder,
 };
 pub mod ply_loader;
+pub mod streaming;

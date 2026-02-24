@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use clap::Parser;
-use potree::convert::ply_loader::load_ply_positions;
+use potree::convert::streaming::convert_ply_streaming;
 
 /// Convert a PLY file into Potree format (octree.bin, hierarchy.bin, metadata.json)
 #[derive(Debug, Parser)]
@@ -35,7 +35,6 @@ struct Args {
     /// Optional RNG seed for reproducible sampling
     #[arg(long)]
     seed: Option<u64>,
-
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -56,29 +55,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     std::fs::create_dir_all(&output)?;
 
-    let data = load_ply_positions(&input)?;
-    let mut builder = data
-        .into_potree_builder()
-        .name(name)
-        .target_scale(scale_arr)
-        .max_points_per_node(args.max_points_per_node)
-        .max_depth(args.max_depth);
-    if let Some(seed) = args.seed {
-        builder = builder.seed(seed);
-    }
-    if let Some(projection) = args.projection {
-        builder = builder.projection(projection);
-    }
-
-    let buffers = builder.build()?;
-
-    let octree_path = output.join("octree.bin");
-    let hierarchy_path = output.join("hierarchy.bin");
-    let metadata_path = output.join("metadata.json");
-
-    std::fs::write(&octree_path, &buffers.octree)?;
-    std::fs::write(&hierarchy_path, &buffers.hierarchy)?;
-    std::fs::write(&metadata_path, &buffers.metadata_json)?;
+    convert_ply_streaming(
+        &input,
+        &output,
+        &name,
+        &args.projection.unwrap_or_default(),
+        scale_arr,
+        args.max_points_per_node,
+        args.max_depth,
+        args.seed,
+    )?;
 
     println!("Wrote Potree output to {}", output.display());
 
