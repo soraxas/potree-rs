@@ -278,6 +278,21 @@ pub fn convert_ply_streaming(
     )?;
     fs::write(output.join("metadata.json"), metadata)?;
 
+    // Quality summary
+    let total_nodes = nodes.len();
+    let leaf_count = nodes.iter().filter(|n| n.child_mask == 0).count();
+    let internal_count = total_nodes - leaf_count;
+    let pts_per_node: Vec<u32> = nodes.iter().map(|n| n.num_points).collect();
+    let root_pts = pts_per_node[0];
+    let max_pts = pts_per_node.iter().copied().max().unwrap_or(0);
+    let avg_pts = pts_per_node.iter().copied().sum::<u32>() as f64 / total_nodes as f64;
+    eprintln!(
+        "Quality: {} nodes ({} internal, {} leaves) | depth {} | \
+         root={} pts | max={} pts/node | avg={:.0} pts/node | spacing={:.4}",
+        total_nodes, internal_count, leaf_count, max_level,
+        root_pts, max_pts, avg_pts, spacing
+    );
+
     Ok(())
 }
 
@@ -415,7 +430,7 @@ fn read_point<R: BufRead + Read>(
 fn sample_tree(
     nodes: &mut Vec<Node>,
     record_size: usize,
-    _max_points_per_node: usize,
+    max_points_per_node: usize,
     scale: [f64; 3],
     offset: [f64; 3],
     base_spacing: f64,

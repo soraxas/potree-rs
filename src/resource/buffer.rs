@@ -198,20 +198,18 @@ pub fn compute_scale_offset(
     (scale, offset)
 }
 
-/// Estimate the spacing for the given minimum and maximum values and number of points.
+/// Estimate the spacing for the given minimum and maximum values.
+///
+/// Matches the C++ PotreeConverter convention: `max_extent / 128`.
+/// This gives approximately `max_points_per_node` LOD points at the root
+/// independent of input point density, and halves at every deeper level.
 #[cfg(feature = "convert")]
-pub fn estimate_spacing(min: [f64; 3], max: [f64; 3], points: u64) -> f64 {
-    if points == 0 {
-        return 0.0;
+pub fn estimate_spacing(min: [f64; 3], max: [f64; 3], _points: u64) -> f64 {
+    let max_extent = (0..3).map(|i| max[i] - min[i]).fold(0.0f64, f64::max);
+    if max_extent <= 0.0 {
+        return 1.0;
     }
-
-    let size = [max[0] - min[0], max[1] - min[1], max[2] - min[2]];
-    let volume = size[0].max(0.0) * size[1].max(0.0) * size[2].max(0.0);
-    if volume <= 0.0 {
-        return 0.0;
-    }
-
-    (volume / points as f64).cbrt()
+    max_extent / 128.0
 }
 
 #[cfg(feature = "convert")]
