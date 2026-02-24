@@ -215,7 +215,9 @@ pub fn convert_ply_streaming(
     // Write octree.bin in preorder (internal node samples, leaf buckets), sorted by Morton code.
     let mut octree_file = File::create(output.join("octree.bin"))?;
     let mut current_offset = 0u64;
+    let pb_write = progress_bar(nodes.len() as u64, "Writing octree ");
     for node in &mut nodes {
+        pb_write.inc(1);
         let raw: Vec<u8> = if node.child_mask == 0 {
             if let Some(path) = &node.temp_path {
                 let mut f = File::open(path)?;
@@ -244,6 +246,7 @@ pub fn convert_ply_streaming(
         node.byte_size = size;
         current_offset += size;
     }
+    pb_write.finish_and_clear();
 
     // hierarchy.bin (chunked)
     let (hierarchy, first_chunk_size) = build_chunked_hierarchy(&nodes, HIERARCHY_STEP_SIZE);
@@ -428,11 +431,17 @@ fn sample_tree(
         }
     }
 
+    let internal: Vec<usize> = order.iter().rev().copied()
+        .filter(|&i| nodes[i].child_mask != 0)
+        .collect();
+    let pb = progress_bar(internal.len() as u64, "Sampling nodes");
+
     for &idx in order.iter().rev() {
         if nodes[idx].child_mask == 0 {
             // Leaf: payload stays as-is; num_points already set during bucket fill.
             continue;
         }
+        pb.inc(1);
 
         let node_min = nodes[idx].min;
         let node_max = nodes[idx].max;
@@ -488,6 +497,7 @@ fn sample_tree(
         nodes[idx].sample_data = sample_data;
         nodes[idx].num_points = (nodes[idx].sample_data.len() / record_size) as u32;
     }
+    pb.finish_and_clear();
 
     Ok(())
 }
@@ -641,10 +651,12 @@ fn split_tree(
     offset: [f64; 3],
     run_id: u64,
 ) -> Result<(), ConvertError> {
+    let pb = spinner("Splitting tree");
     let mut queue: VecDeque<usize> = VecDeque::new();
     queue.push_back(0);
 
     while let Some(idx) = queue.pop_front() {
+        pb.set_message(format!("Splitting tree  {} nodes", nodes.len()));
         if nodes[idx].num_points as usize <= max_points_per_node || nodes[idx].level >= max_depth {
             continue;
         }
@@ -683,17 +695,21 @@ fn split_tree(
             f.read_to_end(&mut buf)?;
             fs::remove_file(path)?;
 
+            let center = [
+                (node_min[0] + node_max[0]) * 0.5,
+                (node_min[1] + node_max[1]) * 0.5,
+                (node_min[2] + node_max[2]) * 0.5,
+            ];
+
+            // Buffer all records per child first, then flush once per child.
+            let mut child_bufs: [Vec<u8>; 8] = Default::default();
+
             let mut pos = 0;
             while pos + record_size <= buf.len() {
                 let record = &buf[pos..pos + record_size];
                 pos += record_size;
                 let point = decode_position(record, scale, offset);
 
-                let center = [
-                    (node_min[0] + node_max[0]) * 0.5,
-                    (node_min[1] + node_max[1]) * 0.5,
-                    (node_min[2] + node_max[2]) * 0.5,
-                ];
                 let mut child = 0u8;
                 if point[2] >= center[2] {
                     child |= 0b0001;
@@ -704,6 +720,15 @@ fn split_tree(
                 if point[0] >= center[0] {
                     child |= 0b0100;
                 }
+                child_bufs[child as usize].extend_from_slice(record);
+            }
+            drop(buf);
+
+            for child in 0u8..8 {
+                let records = &child_bufs[child as usize];
+                if records.is_empty() {
+                    continue;
+                }
                 let child_idx = nodes[idx].children[child as usize].unwrap();
                 ensure_leaf_bucket(nodes, child_idx, run_id)?;
                 let child_path = nodes[child_idx].temp_path.as_ref().unwrap();
@@ -711,8 +736,9 @@ fn split_tree(
                     .create(true)
                     .append(true)
                     .open(child_path)?;
-                cf.write_all(record)?;
-                nodes[child_idx].num_points = nodes[child_idx].num_points.saturating_add(1);
+                cf.write_all(records)?;
+                nodes[child_idx].num_points +=
+                    (records.len() / record_size) as u32;
             }
         }
 
@@ -725,6 +751,7 @@ fn split_tree(
             queue.push_back(*child);
         }
     }
+    pb.finish_and_clear();
 
     Ok(())
 }
@@ -1250,6 +1277,16 @@ fn progress_bar(len: u64, msg: &str) -> ProgressBar {
     .progress_chars("##-");
     pb.set_style(style);
     pb.set_message(msg.to_string());
+    pb
+}
+
+fn spinner(msg: &str) -> ProgressBar {
+    let pb = ProgressBar::new_spinner();
+    let style = ProgressStyle::with_template("{msg} [{elapsed_precise}] {spinner}")
+        .unwrap_or_else(|_| ProgressStyle::default_spinner());
+    pb.set_style(style);
+    pb.set_message(msg.to_string());
+    pb.enable_steady_tick(std::time::Duration::from_millis(100));
     pb
 }
 
