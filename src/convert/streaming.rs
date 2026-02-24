@@ -1,13 +1,17 @@
 use crate::resource::buffer::{
-    build_metadata_json, compute_scale_offset, estimate_spacing, ConvertError, HIERARCHY_BYTES_PER_NODE,
+    build_metadata_json, compute_scale_offset, estimate_spacing, ConvertError,
+    HIERARCHY_BYTES_PER_NODE,
 };
 use byteorder::{BigEndian, ByteOrder, LittleEndian, ReadBytesExt, WriteBytesExt};
 use indicatif::{ProgressBar, ProgressStyle};
 use rand::{rngs::StdRng, SeedableRng};
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+
+/// Hierarchy is split into sub-chunks every HIERARCHY_STEP_SIZE levels (matches C++ default).
+const HIERARCHY_STEP_SIZE: u32 = 4;
 
 #[derive(Debug, Clone)]
 struct Node {
@@ -84,7 +88,9 @@ struct ExtraAttribute {
 }
 
 impl ExtraAttribute {
-    fn byte_size(&self) -> usize { self.scalar.byte_size() }
+    fn byte_size(&self) -> usize {
+        self.scalar.byte_size()
+    }
     fn to_metadata_json(&self) -> serde_json::Value {
         let sz = self.byte_size();
         let [vmin, vmax] = self.scalar.value_range();
@@ -127,6 +133,7 @@ pub fn convert_ply_streaming(
     max_points_per_node: usize,
     max_depth: u32,
     seed: Option<u64>,
+    encoding: &str,
 ) -> Result<(), ConvertError> {
     let header = parse_ply_header(input)?;
 
@@ -205,48 +212,48 @@ pub fn convert_ply_streaming(
     // Reorder to preorder for Potree
     let mut nodes = reorder_nodes_preorder(nodes);
 
-    // Write octree.bin in preorder (internal node samples, leaf buckets)
+    // Write octree.bin in preorder (internal node samples, leaf buckets), sorted by Morton code.
     let mut octree_file = File::create(output.join("octree.bin"))?;
     let mut current_offset = 0u64;
     for node in &mut nodes {
-        if node.child_mask == 0 {
+        let raw: Vec<u8> = if node.child_mask == 0 {
             if let Some(path) = &node.temp_path {
                 let mut f = File::open(path)?;
-                let size = f.metadata()?.len();
-                std::io::copy(&mut f, &mut octree_file)?;
-                node.byte_offset = current_offset;
-                node.byte_size = size;
-                current_offset += size;
+                let mut data = Vec::new();
+                f.read_to_end(&mut data)?;
                 let _ = fs::remove_file(path);
+                data
             } else {
-                node.byte_offset = current_offset;
-                node.byte_size = 0;
+                Vec::new()
             }
         } else {
-            let size = node.sample_data.len() as u64;
-            octree_file.write_all(&node.sample_data)?;
-            node.byte_offset = current_offset;
-            node.byte_size = size;
-            current_offset += size;
-        }
+            std::mem::take(&mut node.sample_data)
+        };
+
+        let encoded = if encoding == "BROTLI" {
+            encode_soa_brotli(&raw, record_size, header.has_color, &header.extra_attributes)?
+        } else {
+            let mut data = raw;
+            sort_records_by_morton(&mut data, record_size);
+            data
+        };
+
+        let size = encoded.len() as u64;
+        octree_file.write_all(&encoded)?;
+        node.byte_offset = current_offset;
+        node.byte_size = size;
+        current_offset += size;
     }
 
-    // hierarchy.bin
-    let mut hierarchy = Vec::with_capacity(nodes.len() * HIERARCHY_BYTES_PER_NODE);
-    for node in &nodes {
-        let node_type = if node.child_mask == 0 { 1u8 } else { 0u8 };
-        hierarchy.write_u8(node_type)?;
-        hierarchy.write_u8(node.child_mask)?;
-        hierarchy.write_u32::<LittleEndian>(node.num_points)?;
-        hierarchy.write_u64::<LittleEndian>(node.byte_offset)?;
-        hierarchy.write_u64::<LittleEndian>(node.byte_size)?;
-    }
+    // hierarchy.bin (chunked)
+    let (hierarchy, first_chunk_size) = build_chunked_hierarchy(&nodes, HIERARCHY_STEP_SIZE);
     fs::write(output.join("hierarchy.bin"), &hierarchy)?;
 
     let max_level = nodes.iter().map(|n| n.level).max().unwrap_or(0);
 
     // metadata.json
-    let extra_attrs_json: Vec<serde_json::Value> = header.extra_attributes
+    let extra_attrs_json: Vec<serde_json::Value> = header
+        .extra_attributes
         .iter()
         .map(|a| a.to_metadata_json())
         .collect();
@@ -259,10 +266,11 @@ pub fn convert_ply_streaming(
         scale,
         offset,
         spacing,
-        "DEFAULT",
+        encoding,
         header.has_color,
         max_level,
-        hierarchy.len(),
+        first_chunk_size,
+        HIERARCHY_STEP_SIZE,
         &extra_attrs_json,
     )?;
     fs::write(output.join("metadata.json"), metadata)?;
@@ -287,7 +295,9 @@ fn parse_ply_header(path: &Path) -> Result<PlyHeader, ConvertError> {
     } else if line.contains("binary_big_endian") {
         PlyFormat::BinaryBigEndian
     } else {
-        return Err(ConvertError::InvalidInput("Unsupported PLY format".to_string()));
+        return Err(ConvertError::InvalidInput(
+            "Unsupported PLY format".to_string(),
+        ));
     };
 
     let mut vertex_count = 0usize;
@@ -339,8 +349,16 @@ fn parse_ply_header(path: &Path) -> Result<PlyHeader, ConvertError> {
 
     let extra_attributes: Vec<ExtraAttribute> = properties
         .iter()
-        .filter(|(name, _)| !matches!(name.as_str(), "x" | "y" | "z" | "red" | "green" | "blue" | "r" | "g" | "b"))
-        .map(|(name, scalar)| ExtraAttribute { name: name.clone(), scalar: *scalar })
+        .filter(|(name, _)| {
+            !matches!(
+                name.as_str(),
+                "x" | "y" | "z" | "red" | "green" | "blue" | "r" | "g" | "b"
+            )
+        })
+        .map(|(name, scalar)| ExtraAttribute {
+            name: name.clone(),
+            scalar: *scalar,
+        })
         .collect();
 
     Ok(PlyHeader {
@@ -380,7 +398,10 @@ fn pass_compute_bounds(
     Ok((min, max))
 }
 
-fn read_point<R: BufRead + Read>(reader: &mut R, header: &PlyHeader) -> Result<ParsedPoint, ConvertError> {
+fn read_point<R: BufRead + Read>(
+    reader: &mut R,
+    header: &PlyHeader,
+) -> Result<ParsedPoint, ConvertError> {
     match header.format {
         PlyFormat::Ascii => read_point_ascii(reader, header),
         PlyFormat::BinaryLittleEndian => read_point_binary::<_, LittleEndian>(reader, header),
@@ -471,7 +492,10 @@ fn sample_tree(
     Ok(())
 }
 
-fn read_point_ascii<R: BufRead + Read>(reader: &mut R, header: &PlyHeader) -> Result<ParsedPoint, ConvertError> {
+fn read_point_ascii<R: BufRead + Read>(
+    reader: &mut R,
+    header: &PlyHeader,
+) -> Result<ParsedPoint, ConvertError> {
     let mut line = String::new();
     reader.read_line(&mut line)?;
     if line.is_empty() {
@@ -486,7 +510,11 @@ fn read_point_ascii<R: BufRead + Read>(reader: &mut R, header: &PlyHeader) -> Re
     let mut pos = [0f64; 3];
     let mut color: Option<[u16; 3]> = None;
     let mut extra: Vec<u8> = Vec::new();
-    let extra_names: HashSet<&str> = header.extra_attributes.iter().map(|a| a.name.as_str()).collect();
+    let extra_names: HashSet<&str> = header
+        .extra_attributes
+        .iter()
+        .map(|a| a.name.as_str())
+        .collect();
     for (i, (name, ty)) in header.properties.iter().enumerate() {
         let val = parts[i];
         let v = parse_scalar_ascii(val, ty)?;
@@ -511,13 +539,13 @@ fn read_point_ascii<R: BufRead + Read>(reader: &mut R, header: &PlyHeader) -> Re
                     let sz = ty.byte_size();
                     let mut buf = [0u8; 8];
                     match ty {
-                        PlyScalar::Char   => buf[0] = v as i8 as u8,
-                        PlyScalar::UChar  => buf[0] = v as u8,
-                        PlyScalar::Short  => LittleEndian::write_i16(&mut buf[..2], v as i16),
+                        PlyScalar::Char => buf[0] = v as i8 as u8,
+                        PlyScalar::UChar => buf[0] = v as u8,
+                        PlyScalar::Short => LittleEndian::write_i16(&mut buf[..2], v as i16),
                         PlyScalar::UShort => LittleEndian::write_u16(&mut buf[..2], v as u16),
-                        PlyScalar::Int    => LittleEndian::write_i32(&mut buf[..4], v as i32),
-                        PlyScalar::UInt   => LittleEndian::write_u32(&mut buf[..4], v as u32),
-                        PlyScalar::Float  => LittleEndian::write_f32(&mut buf[..4], v as f32),
+                        PlyScalar::Int => LittleEndian::write_i32(&mut buf[..4], v as i32),
+                        PlyScalar::UInt => LittleEndian::write_u32(&mut buf[..4], v as u32),
+                        PlyScalar::Float => LittleEndian::write_f32(&mut buf[..4], v as f32),
                         PlyScalar::Double => LittleEndian::write_f64(&mut buf[..8], v),
                     }
                     extra.extend_from_slice(&buf[..sz]);
@@ -525,7 +553,11 @@ fn read_point_ascii<R: BufRead + Read>(reader: &mut R, header: &PlyHeader) -> Re
             }
         }
     }
-    Ok(ParsedPoint { position: pos, color, extra })
+    Ok(ParsedPoint {
+        position: pos,
+        color,
+        extra,
+    })
 }
 
 fn parse_scalar_ascii(val: &str, _ty: &PlyScalar) -> Result<f64, ConvertError> {
@@ -535,11 +567,18 @@ fn parse_scalar_ascii(val: &str, _ty: &PlyScalar) -> Result<f64, ConvertError> {
     Ok(v)
 }
 
-fn read_point_binary<R: Read, BO: ByteOrder>(reader: &mut R, header: &PlyHeader) -> Result<ParsedPoint, ConvertError> {
+fn read_point_binary<R: Read, BO: ByteOrder>(
+    reader: &mut R,
+    header: &PlyHeader,
+) -> Result<ParsedPoint, ConvertError> {
     let mut pos = [0f64; 3];
     let mut color: Option<[u16; 3]> = None;
     let mut extra: Vec<u8> = Vec::new();
-    let extra_names: HashSet<&str> = header.extra_attributes.iter().map(|a| a.name.as_str()).collect();
+    let extra_names: HashSet<&str> = header
+        .extra_attributes
+        .iter()
+        .map(|a| a.name.as_str())
+        .collect();
     for (name, ty) in &header.properties {
         let v = match ty {
             PlyScalar::Char => reader.read_i8()? as f64,
@@ -572,13 +611,13 @@ fn read_point_binary<R: Read, BO: ByteOrder>(reader: &mut R, header: &PlyHeader)
                     let sz = ty.byte_size();
                     let mut buf = [0u8; 8];
                     match ty {
-                        PlyScalar::Char   => buf[0] = v as i8 as u8,
-                        PlyScalar::UChar  => buf[0] = v as u8,
-                        PlyScalar::Short  => LittleEndian::write_i16(&mut buf[..2], v as i16),
+                        PlyScalar::Char => buf[0] = v as i8 as u8,
+                        PlyScalar::UChar => buf[0] = v as u8,
+                        PlyScalar::Short => LittleEndian::write_i16(&mut buf[..2], v as i16),
                         PlyScalar::UShort => LittleEndian::write_u16(&mut buf[..2], v as u16),
-                        PlyScalar::Int    => LittleEndian::write_i32(&mut buf[..4], v as i32),
-                        PlyScalar::UInt   => LittleEndian::write_u32(&mut buf[..4], v as u32),
-                        PlyScalar::Float  => LittleEndian::write_f32(&mut buf[..4], v as f32),
+                        PlyScalar::Int => LittleEndian::write_i32(&mut buf[..4], v as i32),
+                        PlyScalar::UInt => LittleEndian::write_u32(&mut buf[..4], v as u32),
+                        PlyScalar::Float => LittleEndian::write_f32(&mut buf[..4], v as f32),
                         PlyScalar::Double => LittleEndian::write_f64(&mut buf[..8], v),
                     }
                     extra.extend_from_slice(&buf[..sz]);
@@ -586,7 +625,11 @@ fn read_point_binary<R: Read, BO: ByteOrder>(reader: &mut R, header: &PlyHeader)
             }
         }
     }
-    Ok(ParsedPoint { position: pos, color, extra })
+    Ok(ParsedPoint {
+        position: pos,
+        color,
+        extra,
+    })
 }
 
 fn split_tree(
@@ -698,7 +741,10 @@ fn ensure_leaf_bucket(nodes: &mut Vec<Node>, idx: usize, run_id: u64) -> Result<
 /// Read all raw point records from a node's current payload.
 /// - Leaves: reads from the temp file on disk.
 /// - Internal nodes: reads from `sample_data` (their already-computed LOD payload).
-fn read_raw_records_from_node(node: &Node, record_size: usize) -> Result<Vec<Vec<u8>>, ConvertError> {
+fn read_raw_records_from_node(
+    node: &Node,
+    record_size: usize,
+) -> Result<Vec<Vec<u8>>, ConvertError> {
     let slice: &[u8] = if node.child_mask == 0 {
         if let Some(path) = &node.temp_path {
             let mut f = File::open(path)?;
@@ -710,7 +756,10 @@ fn read_raw_records_from_node(node: &Node, record_size: usize) -> Result<Vec<Vec
     } else {
         &node.sample_data
     };
-    Ok(slice.chunks_exact(record_size).map(|c| c.to_vec()).collect())
+    Ok(slice
+        .chunks_exact(record_size)
+        .map(|c| c.to_vec())
+        .collect())
 }
 
 /// Write the rejected records back into a node's payload after the parent has
@@ -925,6 +974,234 @@ fn reorder_nodes_preorder(nodes: Vec<Node>) -> Vec<Node> {
     new_nodes
 }
 
+// ── Morton-code sorting ───────────────────────────────────────────────────────
+
+/// Spread the low 21 bits of `x` into every third bit position (bits 0, 3, 6, …, 60).
+/// Correct magic constants for a 63-bit Morton code with 21 bits per axis.
+/// See <https://www.forceflow.be/2013/10/07/morton-encodingdecoding-through-bit-interleaving-implementations/>
+fn split_by_3(mut x: u64) -> u64 {
+    x &= 0x0000_0000_001f_ffff; // keep 21 bits
+    x = (x | (x << 32)) & 0x001f_0000_0000_ffff;
+    x = (x | (x << 16)) & 0x001f_0000_ff00_00ff;
+    x = (x | (x << 8))  & 0x100f_00f0_0f00_f00f;
+    x = (x | (x << 4))  & 0x10c3_0c30_c30c_30c3;
+    x = (x | (x << 2))  & 0x1249_2492_4924_9249;
+    x
+}
+
+fn morton_encode(x: u32, y: u32, z: u32) -> u64 {
+    split_by_3(x as u64) | (split_by_3(y as u64) << 1) | (split_by_3(z as u64) << 2)
+}
+
+/// Read the quantized i32 position from the first 12 bytes of a record and
+/// return its 63-bit Morton code (coordinates shifted to unsigned range).
+fn morton_code_from_record(record: &[u8]) -> u64 {
+    let ix = LittleEndian::read_i32(&record[0..4]);
+    let iy = LittleEndian::read_i32(&record[4..8]);
+    let iz = LittleEndian::read_i32(&record[8..12]);
+    // XOR with 0x8000_0000 maps i32 → u32 preserving order ([MIN..MAX] → [0..MAX_U32]).
+    let ux = (ix as u32) ^ 0x8000_0000;
+    let uy = (iy as u32) ^ 0x8000_0000;
+    let uz = (iz as u32) ^ 0x8000_0000;
+    morton_encode(ux, uy, uz)
+}
+
+/// Sort the raw byte buffer of point records in-place by Morton code.
+fn sort_records_by_morton(data: &mut Vec<u8>, record_size: usize) {
+    if data.len() < record_size * 2 {
+        return;
+    }
+    let n = data.len() / record_size;
+    let mut indices: Vec<usize> = (0..n).collect();
+    indices.sort_by_key(|&i| morton_code_from_record(&data[i * record_size..(i + 1) * record_size]));
+    // Apply permutation using a temp buffer.
+    let orig = data.clone();
+    for (new_i, &old_i) in indices.iter().enumerate() {
+        data[new_i * record_size..(new_i + 1) * record_size]
+            .copy_from_slice(&orig[old_i * record_size..(old_i + 1) * record_size]);
+    }
+}
+
+// ── BROTLI (SoA + Morton) encoding ───────────────────────────────────────────
+
+/// Encode a 32-bit-per-axis position as a 128-bit Morton code (16 bytes).
+///
+/// The layout matches what `read_morton_128` in `src/morton.rs` decodes:
+/// - bytes[0..8]  = Morton of high 16 bits (mc_h), stored little-endian
+/// - bytes[8..16] = Morton of low  16 bits (mc_l), stored little-endian
+fn encode_morton_128(x: u32, y: u32, z: u32) -> [u8; 16] {
+    let lower = morton_encode(x & 0xFFFF, y & 0xFFFF, z & 0xFFFF);
+    let upper = morton_encode(x >> 16, y >> 16, z >> 16);
+    let mut out = [0u8; 16];
+    LittleEndian::write_u32(&mut out[0..4], upper as u32);
+    LittleEndian::write_u32(&mut out[4..8], (upper >> 32) as u32);
+    LittleEndian::write_u32(&mut out[8..12], lower as u32);
+    LittleEndian::write_u32(&mut out[12..16], (lower >> 32) as u32);
+    out
+}
+
+/// Encode a 16-bit-per-channel RGB triple as a 64-bit Morton code (8 bytes).
+///
+/// The layout matches what `read_morton_64` in `src/morton.rs` decodes:
+/// - bytes[0..4] = lower 32 bits of Morton code, bytes[4..8] = upper 32 bits
+fn encode_morton_64(r: u16, g: u16, b: u16) -> [u8; 8] {
+    let mc = morton_encode(r as u32, g as u32, b as u32);
+    let mut out = [0u8; 8];
+    LittleEndian::write_u32(&mut out[0..4], mc as u32);
+    LittleEndian::write_u32(&mut out[4..8], (mc >> 32) as u32);
+    out
+}
+
+/// Encode an AoS record buffer as Brotli-compressed Struct-of-Arrays with Morton-coded
+/// position and colour.  Matches the C++ PotreeConverter BROTLI format:
+///   - position attribute: n × 16 bytes (128-bit Morton, absolute quantised u32)
+///   - rgb attribute (if any): n × 8 bytes (64-bit Morton, u16 per channel)
+///   - extra attributes: n × attribute.size bytes each (raw, no Morton)
+fn encode_soa_brotli(
+    records: &[u8],
+    record_size: usize,
+    has_color: bool,
+    extra_attributes: &[ExtraAttribute],
+) -> Result<Vec<u8>, ConvertError> {
+    if record_size == 0 || records.is_empty() {
+        return Ok(Vec::new());
+    }
+    let n = records.len() / record_size;
+
+    let color_off = 12usize;
+    let extra_off = color_off + if has_color { 6 } else { 0 };
+    let extra_total: usize = extra_attributes.iter().map(|a| a.byte_size()).sum();
+    let mut soa: Vec<u8> =
+        Vec::with_capacity(n * 16 + n * if has_color { 8 } else { 0 } + n * extra_total);
+
+    // Position array: absolute quantised i32 → u32 → 128-bit Morton
+    for i in 0..n {
+        let o = i * record_size;
+        let ix = LittleEndian::read_i32(&records[o..o + 4]);
+        let iy = LittleEndian::read_i32(&records[o + 4..o + 8]);
+        let iz = LittleEndian::read_i32(&records[o + 8..o + 12]);
+        soa.extend_from_slice(&encode_morton_128(ix as u32, iy as u32, iz as u32));
+    }
+
+    // Colour array: u16 RGB → 64-bit Morton
+    if has_color {
+        for i in 0..n {
+            let o = i * record_size + color_off;
+            let r = LittleEndian::read_u16(&records[o..o + 2]);
+            let g = LittleEndian::read_u16(&records[o + 2..o + 4]);
+            let b = LittleEndian::read_u16(&records[o + 4..o + 6]);
+            soa.extend_from_slice(&encode_morton_64(r, g, b));
+        }
+    }
+
+    // Extra attribute arrays: raw bytes, no Morton
+    let mut ea_off = extra_off;
+    for attr in extra_attributes {
+        let sz = attr.byte_size();
+        for i in 0..n {
+            let o = i * record_size + ea_off;
+            soa.extend_from_slice(&records[o..o + sz]);
+        }
+        ea_off += sz;
+    }
+
+    // Brotli-compress the SoA buffer
+    let mut compressed = Vec::new();
+    {
+        let mut writer = brotli::CompressorWriter::new(&mut compressed, 4096, 5, 22);
+        writer
+            .write_all(&soa)
+            .map_err(|e| ConvertError::InvalidInput(e.to_string()))?;
+    }
+    Ok(compressed)
+}
+
+// ── Hierarchy chunking ────────────────────────────────────────────────────────
+
+/// Build `hierarchy.bin` with sub-chunk support (matches C++ `hierarchyStepSize`).
+///
+/// Each chunk covers `step_size` levels. Nodes at depths that are exact multiples
+/// of `step_size` (and depth > 0) appear **twice**:
+/// - As a PROXY record (type=2) in the parent chunk, with `byteOffset`/`byteSize`
+///   pointing to the sub-chunk in `hierarchy.bin`.
+/// - As the **first** NORMAL/LEAF record in their own sub-chunk.
+///
+/// Returns `(hierarchy_bytes, first_chunk_byte_size)`.
+fn build_chunked_hierarchy(nodes: &[Node], step_size: u32) -> (Vec<u8>, usize) {
+    if nodes.is_empty() {
+        return (Vec::new(), 0);
+    }
+
+    // Collect all chunk-root names (one per node whose depth is a multiple of step_size).
+    let mut chunk_roots: Vec<&str> = Vec::new();
+    for node in nodes {
+        if node.level % step_size == 0 {
+            chunk_roots.push(&node.name);
+        }
+    }
+    // BFS order: shorter names first, then lexicographic within same depth.
+    chunk_roots.sort_by(|a, b| a.len().cmp(&b.len()).then(a.cmp(b)));
+    chunk_roots.dedup();
+
+    // Number of records in the chunk rooted at `root_name`:
+    //   all N where N.name starts_with root_name AND depth(N) <= depth(root) + step_size.
+    // Boundary nodes (depth == depth(root)+step_size) are the PROXY entries.
+    let chunk_record_count = |root: &str| -> usize {
+        let root_depth = (root.len() - 1) as u32;
+        nodes
+            .iter()
+            .filter(|n| n.name.starts_with(root) && n.level <= root_depth + step_size)
+            .count()
+    };
+
+    // Compute cumulative byte offsets for each chunk (BFS order).
+    let mut chunk_offset: HashMap<&str, u64> = HashMap::new();
+    let mut cursor = 0u64;
+    for &root in &chunk_roots {
+        chunk_offset.insert(root, cursor);
+        cursor += (chunk_record_count(root) * HIERARCHY_BYTES_PER_NODE) as u64;
+    }
+
+    let first_chunk_size = chunk_record_count("r") * HIERARCHY_BYTES_PER_NODE;
+
+    let mut out: Vec<u8> = Vec::with_capacity(cursor as usize);
+
+    for &chunk_root in &chunk_roots {
+        let root_depth = (chunk_root.len() - 1) as u32;
+        let boundary_depth = root_depth + step_size;
+
+        // Collect records for this chunk in BFS order.
+        let mut chunk_nodes: Vec<&Node> = nodes
+            .iter()
+            .filter(|n| n.name.starts_with(chunk_root) && n.level <= boundary_depth)
+            .collect();
+        chunk_nodes.sort_by(|a, b| a.name.len().cmp(&b.name.len()).then(a.name.cmp(&b.name)));
+
+        for node in chunk_nodes {
+            // A node at the boundary depth is written as PROXY in this chunk (its own
+            // chunk starts with it again as NORMAL/LEAF with actual octree.bin data).
+            let is_proxy = node.level == boundary_depth;
+
+            let (node_type, byte_offset, byte_size) = if is_proxy {
+                let sub_off = *chunk_offset.get(node.name.as_str()).unwrap_or(&0);
+                let sub_size = (chunk_record_count(&node.name) * HIERARCHY_BYTES_PER_NODE) as u64;
+                (2u8, sub_off, sub_size)
+            } else {
+                let t = if node.child_mask == 0 { 1u8 } else { 0u8 };
+                (t, node.byte_offset, node.byte_size)
+            };
+
+            out.write_u8(node_type).unwrap();
+            out.write_u8(node.child_mask).unwrap();
+            out.write_u32::<LittleEndian>(node.num_points).unwrap();
+            out.write_u64::<LittleEndian>(byte_offset).unwrap();
+            out.write_u64::<LittleEndian>(byte_size).unwrap();
+        }
+    }
+
+    (out, first_chunk_size)
+}
+
 fn write_point_quantized<W: Write>(
     writer: &mut W,
     point: &ParsedPoint,
@@ -981,7 +1258,11 @@ mod tests {
     use super::*;
 
     fn pt(x: f64, y: f64, z: f64) -> ParsedPoint {
-        ParsedPoint { position: [x, y, z], color: None, extra: vec![] }
+        ParsedPoint {
+            position: [x, y, z],
+            color: None,
+            extra: vec![],
+        }
     }
 
     // Decode the xyz from a 12-byte (no-color) record.
@@ -1019,32 +1300,15 @@ mod tests {
 
     #[test]
     fn poisson_empty_input() {
-        let out = poisson_sample(
-            &[],
-            12,
-            1.0,
-            [0.001; 3],
-            [0.0; 3],
-            [0.0; 3],
-            [1.0; 3],
-        )
-        .unwrap();
+        let out = poisson_sample(&[], 12, 1.0, [0.001; 3], [0.0; 3], [0.0; 3], [1.0; 3]).unwrap();
         assert!(out.is_empty());
     }
 
     #[test]
     fn poisson_single_point_always_accepted() {
         let points = vec![pt(0.5, 0.5, 0.5)];
-        let out = poisson_sample(
-            &points,
-            12,
-            1.0,
-            [0.001; 3],
-            [0.0; 3],
-            [0.0; 3],
-            [1.0; 3],
-        )
-        .unwrap();
+        let out =
+            poisson_sample(&points, 12, 1.0, [0.001; 3], [0.0; 3], [0.0; 3], [1.0; 3]).unwrap();
         assert_eq!(out.len(), 12);
     }
 
@@ -1054,16 +1318,8 @@ mod tests {
         // spacing = 0.5, node [0,10]^3, center=[5,5,5]
         // Both points near x=8 (cd≈3 >> 0.5), 0.3 apart → second is rejected.
         let points = vec![pt(8.0, 5.0, 5.0), pt(8.3, 5.0, 5.0)];
-        let out = poisson_sample(
-            &points,
-            12,
-            0.5,
-            [0.001; 3],
-            [0.0; 3],
-            [0.0; 3],
-            [10.0; 3],
-        )
-        .unwrap();
+        let out =
+            poisson_sample(&points, 12, 0.5, [0.001; 3], [0.0; 3], [0.0; 3], [10.0; 3]).unwrap();
         assert_eq!(out.len() / 12, 1);
     }
 
@@ -1073,16 +1329,7 @@ mod tests {
         let points = vec![pt(0.0, 0.0, 0.0), pt(2.0, 0.0, 0.0)];
         let scale = [0.001; 3];
         let offset = [0.0; 3];
-        let out = poisson_sample(
-            &points,
-            12,
-            1.0,
-            scale,
-            offset,
-            [-1.0; 3],
-            [3.0; 3],
-        )
-        .unwrap();
+        let out = poisson_sample(&points, 12, 1.0, scale, offset, [-1.0; 3], [3.0; 3]).unwrap();
         assert_eq!(out.len() / 12, 2);
     }
 
@@ -1099,16 +1346,7 @@ mod tests {
         let scale = [0.001; 3];
         let offset = [0.0; 3];
         let spacing = 0.25;
-        let out = poisson_sample(
-            &points,
-            12,
-            spacing,
-            scale,
-            offset,
-            [-0.1; 3],
-            [1.1; 3],
-        )
-        .unwrap();
+        let out = poisson_sample(&points, 12, spacing, scale, offset, [-0.1; 3], [1.1; 3]).unwrap();
 
         let n = out.len() / 12;
         assert!(n > 0);
@@ -1122,7 +1360,8 @@ mod tests {
             for j in (i + 1)..accepted_xyz.len() {
                 let a = accepted_xyz[i];
                 let b = accepted_xyz[j];
-                let d = ((a[0]-b[0]).powi(2)+(a[1]-b[1]).powi(2)+(a[2]-b[2]).powi(2)).sqrt();
+                let d =
+                    ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt();
                 // allow small quantization slop (1 scale unit = 0.001)
                 assert!(
                     d >= spacing - 0.002,
@@ -1143,18 +1382,190 @@ mod tests {
         let points = vec![pt(80.0, 50.0, 50.0), pt(80.2, 50.0, 50.0)];
         let scale = [0.001; 3];
         let offset = [0.0; 3];
-        let out = poisson_sample(
-            &points,
-            12,
-            0.3,
-            scale,
-            offset,
-            [0.0; 3],
-            [100.0; 3],
-        )
-        .unwrap();
+        let out = poisson_sample(&points, 12, 0.3, scale, offset, [0.0; 3], [100.0; 3]).unwrap();
         assert_eq!(out.len() / 12, 1);
         let xyz = decode_xyz(&out[0..12], scale, offset);
-        assert!((xyz[0] - 80.0).abs() < 0.002, "expected x≈80.0 (closer to geom center), got {}", xyz[0]);
+        assert!(
+            (xyz[0] - 80.0).abs() < 0.002,
+            "expected x≈80.0 (closer to geom center), got {}",
+            xyz[0]
+        );
+    }
+
+    // ── Morton code ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn morton_encode_origin_is_zero() {
+        assert_eq!(morton_encode(0, 0, 0), 0);
+    }
+
+    #[test]
+    fn morton_encode_bits_interleaved() {
+        // x=1 (bit 0 set) → lands at bit position 0 of Morton code
+        assert_eq!(morton_encode(1, 0, 0), 0b001);
+        // y=1 → bit 1
+        assert_eq!(morton_encode(0, 1, 0), 0b010);
+        // z=1 → bit 2
+        assert_eq!(morton_encode(0, 0, 1), 0b100);
+        // all 1 → bit 0,1,2
+        assert_eq!(morton_encode(1, 1, 1), 0b111);
+    }
+
+    #[test]
+    fn morton_sort_orders_by_z_curve() {
+        let scale = [1.0; 3];
+        let offset = [0.0; 3];
+        // Build 3 records with i32 quantized positions (no color, record_size=12)
+        let mut data = Vec::new();
+        // Three points: [100,0,0], [0,0,0], [0,100,0] — after i32 shift to u32,
+        // Morton ordering should put [0,0,0] first.
+        for &(x, y, z) in &[(100i32, 0, 0), (0, 0, 0), (0, 100, 0)] {
+            data.write_i32::<LittleEndian>(x).unwrap();
+            data.write_i32::<LittleEndian>(y).unwrap();
+            data.write_i32::<LittleEndian>(z).unwrap();
+        }
+        sort_records_by_morton(&mut data, 12);
+        let first_x = LittleEndian::read_i32(&data[0..4]);
+        let first_y = LittleEndian::read_i32(&data[4..8]);
+        let first_z = LittleEndian::read_i32(&data[8..12]);
+        assert_eq!([first_x, first_y, first_z], [0, 0, 0], "origin should sort first");
+    }
+
+    #[test]
+    fn morton_sort_stable_on_single_record() {
+        let mut data: Vec<u8> = vec![1, 0, 0, 0, 2, 0, 0, 0, 3, 0, 0, 0]; // one 12-byte record
+        let orig = data.clone();
+        sort_records_by_morton(&mut data, 12);
+        assert_eq!(data, orig);
+    }
+
+    // ── Morton 128-bit round-trip ─────────────────────────────────────────────
+
+    #[test]
+    fn encode_morton_128_roundtrip() {
+        use crate::morton::read_morton_128;
+        for &(x, y, z) in &[
+            (0u32, 0u32, 0u32),
+            (1, 0, 0),
+            (0, 1, 0),
+            (0, 0, 1),
+            (1000, 0, 0),
+            (0, 0, 1000),
+            (1000, 1000, 1000),
+            (0xFFFF, 0xFFFF, 0xFFFF),
+        ] {
+            let bytes = encode_morton_128(x, y, z);
+            let (dx, dy, dz) = read_morton_128(&bytes);
+            assert_eq!((dx, dy, dz), (x, y, z), "roundtrip failed for ({x},{y},{z})");
+        }
+    }
+
+    #[test]
+    fn encode_morton_64_roundtrip() {
+        use crate::morton::read_morton_64;
+        for &(r, g, b) in &[
+            (0u16, 0u16, 0u16),
+            (255, 0, 0),
+            (0, 0, 255),
+            (65535, 65535, 65535),
+            (1000, 2000, 3000),
+        ] {
+            let bytes = encode_morton_64(r, g, b);
+            let (dr, dg, db) = read_morton_64(&bytes);
+            assert_eq!((dr, dg, db), (r, g, b), "roundtrip failed for ({r},{g},{b})");
+        }
+    }
+
+    // ── Hierarchy chunking ────────────────────────────────────────────────────
+
+    fn make_leaf_node(name: &str, byte_offset: u64, byte_size: u64, num_points: u32) -> Node {
+        let level = (name.len() - 1) as u32;
+        Node {
+            name: name.to_string(),
+            level,
+            min: [0.0; 3],
+            max: [1.0; 3],
+            children: [None; 8],
+            child_mask: 0,
+            num_points,
+            byte_offset,
+            byte_size,
+            temp_path: None,
+            sample_data: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn chunked_hierarchy_flat_tree_matches_no_chunking() {
+        // Tree depth < step_size: one chunk, firstChunkSize == total size.
+        let nodes = vec![
+            make_leaf_node("r", 0, 100, 10),
+            make_leaf_node("r0", 100, 50, 5),
+            make_leaf_node("r1", 150, 50, 5),
+        ];
+        let (bytes, first_chunk_size) = build_chunked_hierarchy(&nodes, 4);
+        assert_eq!(bytes.len() % 22, 0);
+        assert_eq!(first_chunk_size, bytes.len(), "flat tree: all in one chunk");
+        // All 3 nodes, no proxies
+        assert_eq!(bytes.len(), 3 * 22);
+    }
+
+    #[test]
+    fn chunked_hierarchy_deep_tree_has_proxy_and_subchunk() {
+        // Depth-4 node → proxy in root chunk + first record of sub-chunk.
+        // Root chunk (depth 0-4 inclusive): nodes r, r0, r0/0, r0/00, r0000 (depth4 = proxy)
+        // Sub-chunk r0000: first record = r0000 as NORMAL, then r00000.
+        let nodes = vec![
+            {
+                let mut n = make_leaf_node("r", 0, 0, 0);
+                n.child_mask = 1;
+                n
+            },
+            {
+                let mut n = make_leaf_node("r0", 0, 0, 0);
+                n.child_mask = 1;
+                n
+            },
+            {
+                let mut n = make_leaf_node("r00", 0, 0, 0);
+                n.child_mask = 1;
+                n
+            },
+            {
+                let mut n = make_leaf_node("r000", 0, 0, 0);
+                n.child_mask = 1;
+                n
+            },
+            {
+                let mut n = make_leaf_node("r0000", 200, 60, 6); // depth 4 = boundary
+                n.child_mask = 1;
+                n
+            },
+            make_leaf_node("r00000", 260, 30, 3), // depth 5: in sub-chunk
+        ];
+
+        let (bytes, first_chunk_size) = build_chunked_hierarchy(&nodes, 4);
+
+        // Root chunk: r, r0, r00, r000, r0000(proxy) = 5 records
+        assert_eq!(first_chunk_size, 5 * 22);
+        // Sub-chunk r0000: r0000(normal), r00000(leaf) = 2 records
+        assert_eq!(bytes.len(), (5 + 2) * 22, "7 total records (r0000 appears twice)");
+
+        // Check proxy record for r0000 in root chunk (4th record, index 4):
+        let proxy_off = 4 * 22;
+        let proxy_type = bytes[proxy_off];
+        assert_eq!(proxy_type, 2, "r0000 must be PROXY (type=2) in root chunk");
+
+        // The proxy's byteOffset should point to the sub-chunk (starts right after root chunk)
+        let proxy_hier_off = LittleEndian::read_u64(&bytes[proxy_off + 6..proxy_off + 14]);
+        assert_eq!(proxy_hier_off, first_chunk_size as u64);
+
+        // Sub-chunk first record: r0000 as NORMAL (type 0 since it has a child)
+        let sub_type = bytes[first_chunk_size];
+        assert_eq!(sub_type, 0, "r0000 in sub-chunk must be NORMAL (type=0)");
+
+        // Sub-chunk first record's byteOffset = octree offset of r0000's actual data
+        let sub_oct_off = LittleEndian::read_u64(&bytes[first_chunk_size + 6..first_chunk_size + 14]);
+        assert_eq!(sub_oct_off, 200, "r0000 sub-chunk record should have octree byte_offset=200");
     }
 }

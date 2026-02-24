@@ -35,6 +35,10 @@ struct Args {
     /// Optional RNG seed for reproducible sampling
     #[arg(long)]
     seed: Option<u64>,
+
+    /// Output encoding: DEFAULT (raw AoS) or BROTLI (SoA + Brotli compression)
+    #[arg(long, default_value = "BROTLI")]
+    encoding: String,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -64,6 +68,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         args.max_points_per_node,
         args.max_depth,
         args.seed,
+        &args.encoding,
     )?;
 
     println!("Wrote Potree output to {}", output.display());

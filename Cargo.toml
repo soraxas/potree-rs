@@ -59,6 +59,7 @@ rand = { version = "0.8", optional = true }
 indicatif = "0.18.4"
 rayon = { version = "1.10", optional = true }
 tempfile = { version = "3", optional = true }
+brotli = "8.0.2"
 
 [dev-dependencies]
 wasm_thread = { version = "0.3.3" }

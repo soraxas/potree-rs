@@ -10,11 +10,11 @@ use byteorder::{ByteOrder, LittleEndian, WriteBytesExt};
 #[cfg(feature = "convert")]
 use rand::{rngs::StdRng, Rng, SeedableRng};
 #[cfg(feature = "convert")]
+use rayon::prelude::*;
+#[cfg(feature = "convert")]
 use serde_json::json;
 #[cfg(feature = "convert")]
 use thiserror::Error;
-#[cfg(feature = "convert")]
-use rayon::prelude::*;
 
 #[cfg(feature = "convert")]
 use std::fs::{self, File};
@@ -296,9 +296,9 @@ pub fn build_octree_bin_positions(
                 let colors = colors.ok_or_else(|| {
                     ConvertError::InvalidInput("missing colors array".to_string())
                 })?;
-                let [r, g, b] = colors
-                    .get(idx)
-                    .ok_or_else(|| ConvertError::InvalidInput("color count mismatch".to_string()))?;
+                let [r, g, b] = colors.get(idx).ok_or_else(|| {
+                    ConvertError::InvalidInput("color count mismatch".to_string())
+                })?;
                 LittleEndian::write_u16(&mut chunk[12..14], *r);
                 LittleEndian::write_u16(&mut chunk[14..16], *g);
                 LittleEndian::write_u16(&mut chunk[16..18], *b);
@@ -373,6 +373,7 @@ pub fn write_metadata_json(
         has_color,
         depth,
         hierarchy_bytes,
+        5, // legacy step_size for buffer-based builds
         &[],
     )?;
 
@@ -400,6 +401,7 @@ pub fn build_metadata_json(
     has_color: bool,
     depth: u32,
     hierarchy_bytes: usize,
+    step_size: u32,
     extra_attrs: &[serde_json::Value],
 ) -> Result<Vec<u8>, ConvertError> {
     let mut attributes = vec![json!({
@@ -438,7 +440,7 @@ pub fn build_metadata_json(
         "projection": projection,
         "hierarchy": {
             "firstChunkSize": hierarchy_bytes,
-            "stepSize": 5,
+            "stepSize": step_size,
             "depth": depth
         },
         "offset": [offset[0], offset[1], offset[2]],
@@ -770,6 +772,7 @@ pub fn build_potree_buffers_with_options(
         colors.is_some(),
         max_depth_seen,
         hierarchy.len(),
+        5, // legacy step_size for buffer-based builds
         &[],
     )?;
 
