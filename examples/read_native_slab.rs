@@ -1,13 +1,13 @@
-use potree::prelude::*;
+use potree::{point_cloud::PointCloudAsync, prelude::*};
 
 #[tokio::main(flavor = "current_thread")]
 pub async fn main() {
     tracing_subscriber::fmt::init();
 
-    let url: &str = "file://assets/heidentor";
+    let path: &str = "assets/heidentor";
 
     tracing::info!("Load pointcloud from local filesystem");
-    let mut point_cloud = PointCloud::from_url(url, ResourceLoader::new())
+    let mut point_cloud = PointCloud::from_path(path)
         .await
         .expect("Unable to load point cloud");
 

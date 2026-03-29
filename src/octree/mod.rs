@@ -4,16 +4,19 @@ pub mod snapshot;
 
 pub mod point_attributes;
 
+#[cfg(feature = "slab")]
 use slab::Slab;
 
 pub type NodeId = usize;
 
+#[cfg(feature = "slab")]
 #[derive(Debug)]
 pub struct VacantEntry<'a, T> {
     vacant_entry: slab::VacantEntry<'a, T>,
     key: NodeId,
 }
 
+#[cfg(feature = "slab")]
 impl<'a, T> VacantEntry<'a, T> {
     /// Insert a value in the entry, returning a mutable reference to the value.
     ///
@@ -66,18 +69,21 @@ impl<'a, T> VacantEntry<'a, T> {
     }
 }
 
+#[cfg(feature = "slab")]
 #[derive(Clone, Debug)]
 pub struct Octree<T> {
     storage: Slab<T>,
     root_id: NodeId,
 }
 
+#[cfg(feature = "slab")]
 impl<T> Default for Octree<T> {
     fn default() -> Self {
         Self::new()
     }
 }
 
+#[cfg(feature = "slab")]
 impl<T> Octree<T> {
     pub fn new() -> Self {
         let storage = Slab::new();

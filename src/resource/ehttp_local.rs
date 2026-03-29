@@ -34,11 +34,6 @@ struct ResponseMessage {
     payload: Result<Vec<u8>, ResourceError>,
 }
 
-enum ResponsePayload {
-    Success(Vec<u8>),
-    Error(ResourceError),
-}
-
 impl EhttpClientLocal {
     pub fn new() -> Self {
         let (tx_request, rx_request) = unbounded();

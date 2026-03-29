@@ -74,10 +74,7 @@ impl ResourceLoader {
                 Ok(ErasedResourceClient::File(&self.file))
             }
 
-            #[cfg(all(
-                not(feature = "fs"),
-                any(feature = "reqwest", feature = "ehttp", feature = "ehttp_local")
-            ))]
+            #[cfg(all(not(feature = "fs"), any(feature = "reqwest", feature = "ehttp")))]
             {
                 Ok(ErasedResourceClient::Http(&self.http))
             }
@@ -186,7 +183,7 @@ impl ResourceClient for ErasedResourceClient<'_> {
         match self {
             #[cfg(feature = "fs")]
             ErasedResourceClient::File(delegate) => delegate.get(url, headers).await,
-            #[cfg(any(feature = "reqwest", feature = "ehttp", feature = "ehttp_local"))]
+            #[cfg(any(feature = "reqwest", feature = "ehttp"))]
             ErasedResourceClient::Http(delegate) => delegate.get(url, headers).await,
             _ => Err(ResourceError::Unsupported(
                 "Scheme not supported".to_string(),
@@ -207,7 +204,7 @@ impl ResourceClient for ErasedResourceClient<'_> {
             ErasedResourceClient::File(delegate) => {
                 delegate.get_range(url, offset, length, headers).await
             }
-            #[cfg(any(feature = "reqwest", feature = "ehttp", feature = "ehttp_local"))]
+            #[cfg(any(feature = "reqwest", feature = "ehttp"))]
             ErasedResourceClient::Http(delegate) => {
                 delegate.get_range(url, offset, length, headers).await
             }
@@ -226,7 +223,7 @@ impl ResourceClient for ErasedResourceClient<'_> {
         match self {
             #[cfg(feature = "fs")]
             ErasedResourceClient::File(delegate) => delegate.get_json(url, headers).await,
-            #[cfg(any(feature = "reqwest", feature = "ehttp", feature = "ehttp_local"))]
+            #[cfg(any(feature = "reqwest", feature = "ehttp"))]
             ErasedResourceClient::Http(delegate) => delegate.get_json(url, headers).await,
             _ => Err(ResourceError::Unsupported(
                 "Scheme not supported".to_string(),

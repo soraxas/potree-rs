@@ -1,23 +1,21 @@
-use potree::asset::fs::PotreeFsAsset;
-use potree::hierarchy::HierarchyAsync;
+use potree::blocking::asset::fs::BlockingPotreeFsAsset;
+use potree::blocking::hierarchy::HierarchySync;
 use potree::octree::node::{iter_one_bits, NodeType};
 use potree::prelude::*;
 use std::collections::VecDeque;
 
-#[tokio::main(flavor = "current_thread")]
-pub async fn main() -> Result<(), Box<dyn std::error::Error + 'static>> {
+pub fn main() -> Result<(), Box<dyn std::error::Error + 'static>> {
     tracing_subscriber::fmt::init();
 
     let path: &str = "assets/heidentor";
 
-    let potree_asset = PotreeFsAsset::from_path(path);
+    let potree_asset = BlockingPotreeFsAsset::from_path(path);
 
     tracing::info!("Load pointcloud from local filesystem path {}", path);
-    let hierarchy = Hierarchy::new(potree_asset).await?;
+    let hierarchy = Hierarchy::new_blocking(potree_asset)?;
 
     let nodes = hierarchy
         .load_initial_hierarchy()
-        .await
         .expect("Unable to load initial hierarchy");
     tracing::info!(
         "Successfuly loaded point cloud hierarchy with {} nodes",
@@ -28,7 +26,7 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error + 'static>> {
     for node in nodes {
         // load points only for nodes (not proxies)
         if matches!(node.node_type, NodeType::Node) {
-            match hierarchy.load_points(&node).await {
+            match hierarchy.load_points(&node) {
                 Ok(points) => {
                     tracing::info!(
                         "Loaded {} points for node {}",
@@ -47,7 +45,6 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error + 'static>> {
     // This will load the entire hierarchy
     let all_nodes = hierarchy
         .load_entire_hierarchy()
-        .await
         .expect("Unable to load entire hierarchy");
 
     tracing::info!(

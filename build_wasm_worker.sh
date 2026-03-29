@@ -15,8 +15,8 @@ RUSTFLAGS="-C target-feature=+atomics,+bulk-memory,+mutable-globals \
   -C link-arg=--export=__tls_base \
   --cfg getrandom_backend=\"wasm_js\"" \
   cargo +nightly build \
-      --features="wasm_worker" \
-      --example read_wasm \
+      --features="wasm_worker slab" \
+      --example read_wasm_worker \
       --target wasm32-unknown-unknown \
       --profile wasm-release \
       -Z build-std=std,panic_abort
@@ -24,6 +24,6 @@ RUSTFLAGS="-C target-feature=+atomics,+bulk-memory,+mutable-globals \
 # Note the usage of `--target no-modules` here which is required for passing
 # the memory import to each wasm module.
 wasm-bindgen \
-  target/wasm32-unknown-unknown/wasm-release/examples/read_wasm.wasm \
+  target/wasm32-unknown-unknown/wasm-release/examples/read_wasm_worker.wasm \
   --out-dir ./wasm \
   --target web

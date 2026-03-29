@@ -1,50 +1,132 @@
-use crate::metadata::{LoadPointsError, Metadata, Points};
-use crate::octree::aabb::create_child_aabb;
+#[cfg(feature = "fs")]
+use crate::asset::fs::PotreeFsAsset;
+#[cfg(any(feature = "reqwest", feature = "ehttp"))]
+use crate::asset::http::PotreeHttpAsset;
+#[cfg(any(feature = "reqwest", feature = "ehttp", feature = "fs"))]
+use crate::asset::url::PotreeUrlAsset;
+#[cfg(any(feature = "reqwest", feature = "ehttp", feature = "fs"))]
+use crate::asset::PotreeAsset;
+#[cfg(any(feature = "reqwest", feature = "ehttp", feature = "fs"))]
+use crate::metadata::Points;
+use crate::metadata::{LoadPointsError, Metadata};
+#[cfg(any(feature = "reqwest", feature = "ehttp", feature = "fs"))]
 use crate::octree::node::{NodeType, OctreeNode};
-use crate::point_cloud::{HierarchyNodeEntry, LoadPotreePointCloudError};
-use crate::prelude::ReadHierarchyError;
-use crate::resource::ResourceLoader;
+#[cfg(any(feature = "reqwest", feature = "ehttp", feature = "fs"))]
+use crate::parse::parse_flat_hierarchy;
+use crate::parse::ParseHierarchyError;
+#[cfg(any(feature = "reqwest", feature = "ehttp", feature = "fs"))]
+use async_trait::async_trait;
 use binrw::prelude::*;
-use binrw::BinReaderExt;
+#[cfg(any(feature = "reqwest", feature = "ehttp", feature = "fs"))]
 use std::collections::VecDeque;
-use std::io::Cursor;
+#[cfg(feature = "fs")]
+use std::path::PathBuf;
+use thiserror::Error;
+#[cfg(any(feature = "reqwest", feature = "ehttp", feature = "fs"))]
 use tracing::warn;
 
 #[derive(Clone, Debug)]
-pub struct Hierarchy {
-    metadata: Metadata,
-    hierarchy_url: String,
-    octree_url: String,
-    resource_loader: ResourceLoader,
+pub struct Hierarchy<T> {
+    #[allow(unused)]
+    pub(crate) metadata: Metadata,
+    #[allow(unused)]
+    pub(crate) asset: T,
 }
 
-impl Hierarchy {
+#[cfg(any(feature = "reqwest", feature = "ehttp", feature = "fs"))]
+impl Hierarchy<PotreeUrlAsset> {
+    /// Load a Potree point cloud from a URL.
+    /// Metadatas, hierarchy and octree are supposed to be accessible relatively to the provided url:
+    ///  - Metadata: `<url>/metadata.json`
+    ///  - Hierarchy: `<url>/hierarchy.bin`
+    ///  - Octree: `<url>/octree.bin`
+    pub async fn from_url(url: &str) -> Result<Self, <PotreeUrlAsset as PotreeAsset>::Error> {
+        let asset = PotreeUrlAsset::from_url(url)?;
+
+        Self::new(asset).await
+    }
+}
+
+#[cfg(any(feature = "reqwest", feature = "ehttp"))]
+impl Hierarchy<PotreeHttpAsset> {
+    /// Load a Potree point cloud from a URL.
+    /// Metadatas, hierarchy and octree are supposed to be accessible relatively to the provided url:
+    ///  - Metadata: `<url>/metadata.json`
+    ///  - Hierarchy: `<url>/hierarchy.bin`
+    ///  - Octree: `<url>/octree.bin`
+    #[cfg(any(feature = "reqwest", feature = "ehttp"))]
+    pub async fn from_http_url(url: &str) -> Result<Self, <PotreeHttpAsset as PotreeAsset>::Error> {
+        let asset = PotreeHttpAsset::from_url(url);
+
+        Self::new(asset).await
+    }
+}
+
+#[cfg(feature = "fs")]
+impl Hierarchy<PotreeFsAsset> {
+    /// Load a Potree point cloud from a path.
+    /// Metadatas, hierarchy and octree are supposed to be accessible relatively to the provided path:
+    ///  - Metadata: `<path>/metadata.json`
+    ///  - Hierarchy: `<path>/hierarchy.bin`
+    ///  - Octree: `<path>/octree.bin`
+    pub async fn from_path(
+        path: impl Into<PathBuf>,
+    ) -> Result<Self, <PotreeFsAsset as PotreeAsset>::Error> {
+        let asset = PotreeFsAsset::from_path(path);
+
+        Ok(Self::new(asset).await?)
+    }
+}
+
+#[cfg(any(feature = "reqwest", feature = "ehttp", feature = "fs"))]
+#[async_trait]
+pub trait HierarchyAsync<T: PotreeAsset> {
+    async fn load_initial_hierarchy(
+        &self,
+    ) -> Result<Vec<OctreeNode>, PotreeHierarchyError<T::Error>>;
+
+    async fn load_hierarchy(
+        &self,
+        node: &OctreeNode,
+    ) -> Result<Vec<OctreeNode>, PotreeHierarchyError<T::Error>>;
+
+    async fn load_entire_hierarchy(
+        &self,
+    ) -> Result<Vec<OctreeNode>, PotreeHierarchyError<T::Error>>;
+
+    async fn load_entire_hierarchy_from_proxy(
+        &self,
+        node: OctreeNode,
+    ) -> Result<Vec<OctreeNode>, PotreeHierarchyError<T::Error>>;
+
+    // Functions to load points
+    async fn load_points(
+        &self,
+        node: &OctreeNode,
+    ) -> Result<Points, PotreeHierarchyError<T::Error>>;
+}
+
+#[cfg(any(feature = "reqwest", feature = "ehttp", feature = "fs"))]
+impl<T: PotreeAsset> Hierarchy<T> {
     /// Load a Potree point cloud from a URL.
     /// Relatives urls works only if the provided client supports it.
     /// Metadatas, hierarchy and octree are supposed to be accessible relatively to the provided url:
     ///  - Metadata: `<url>/metadata.json`
     ///  - Hierarchy: `<url>/hierarchy.bin`
     ///  - Octree: `<url>/octree.bin`
-    pub async fn from_url(
-        url: &str,
-        resource_loader: ResourceLoader,
-    ) -> Result<Hierarchy, LoadPotreePointCloudError> {
-        let metadata_url = format!("{}/metadata.json", url).to_string();
-        let hierarchy_url = format!("{}/hierarchy.bin", url).to_string();
-        let metadata = resource_loader
-            .get_json(&metadata_url, None)
-            .await
-            .map_err(LoadPotreePointCloudError::ResourceError)?;
+    pub async fn new(asset: T) -> Result<Self, T::Error> {
+        let metadata = asset.read_metadata().await?;
 
-        Ok(Self {
-            metadata,
-            hierarchy_url,
-            octree_url: format!("{}/octree.bin", url).to_string(),
-            resource_loader,
-        })
+        Ok(Self { metadata, asset })
     }
+}
 
-    pub async fn load_initial_hierarchy(&self) -> Result<Vec<OctreeNode>, ReadHierarchyError> {
+#[cfg(any(feature = "reqwest", feature = "ehttp", feature = "fs"))]
+#[async_trait]
+impl<T: PotreeAsset> HierarchyAsync<T> for Hierarchy<T> {
+    async fn load_initial_hierarchy(
+        &self,
+    ) -> Result<Vec<OctreeNode>, PotreeHierarchyError<T::Error>> {
         // load root node metadatas
         let root = self.metadata.create_flat_root_node();
 
@@ -54,41 +136,42 @@ impl Hierarchy {
         Ok(nodes)
     }
 
-    pub async fn load_hierarchy(
+    async fn load_hierarchy(
         &self,
         node: &OctreeNode,
-    ) -> Result<Vec<OctreeNode>, ReadHierarchyError> {
+    ) -> Result<Vec<OctreeNode>, PotreeHierarchyError<T::Error>> {
         if matches!(node.node_type, NodeType::Proxy) {
             let data = self
-                .resource_loader
-                .get_range(
-                    &self.hierarchy_url,
+                .asset
+                .read_hierarchy(
                     node.hierarchy_byte_offset,
                     node.hierarchy_byte_size as usize,
-                    None,
                 )
-                .await?;
+                .await
+                .map_err(PotreeHierarchyError::Read)?;
 
             Ok(parse_flat_hierarchy(node, &data)?)
         } else {
             // this node is not a proxy, so its hierarchy can't be loaded
-            Err(ReadHierarchyError::AlreadyLoaded)
+            Err(PotreeHierarchyError::NothingToLoad)
         }
     }
 
-    pub async fn load_entire_hierarchy(&self) -> Result<Vec<OctreeNode>, ReadHierarchyError> {
+    async fn load_entire_hierarchy(
+        &self,
+    ) -> Result<Vec<OctreeNode>, PotreeHierarchyError<T::Error>> {
         let root = self.metadata.create_flat_root_node();
 
-        self.load_entire_hierarchy_from_proxy(root).await
+        Ok(self.load_entire_hierarchy_from_proxy(root).await?)
     }
 
-    pub async fn load_entire_hierarchy_from_proxy(
+    async fn load_entire_hierarchy_from_proxy(
         &self,
         node: OctreeNode,
-    ) -> Result<Vec<OctreeNode>, ReadHierarchyError> {
+    ) -> Result<Vec<OctreeNode>, PotreeHierarchyError<T::Error>> {
         if !matches!(node.node_type, NodeType::Proxy) {
             // node is not a proxy
-            return Err(ReadHierarchyError::NothingToLoad);
+            return Err(PotreeHierarchyError::NothingToLoad);
         }
 
         // initialize a stack
@@ -155,17 +238,15 @@ impl Hierarchy {
         Ok(nodes)
     }
 
-    // Functions to load points
-    pub async fn load_points(&self, node: &OctreeNode) -> Result<Points, LoadPointsError> {
+    async fn load_points(
+        &self,
+        node: &OctreeNode,
+    ) -> Result<Points, PotreeHierarchyError<T::Error>> {
         let buffer = self
-            .resource_loader
-            .get_range(
-                &self.octree_url,
-                node.byte_offset,
-                node.byte_size as usize,
-                None,
-            )
-            .await?;
+            .asset
+            .read_octree(node.byte_offset, node.byte_size as usize)
+            .await
+            .map_err(PotreeHierarchyError::Read)?;
 
         let points = self
             .metadata
@@ -175,97 +256,17 @@ impl Hierarchy {
     }
 }
 
-pub fn parse_flat_hierarchy(
-    proxy_node: &OctreeNode,
-    buf: &[u8],
-) -> Result<Vec<OctreeNode>, ReadHierarchyError> {
-    const BYTES_PER_NODE: usize = 22;
-    let mut cursor = Cursor::new(buf);
-    let num_nodes = buf.len() / BYTES_PER_NODE;
+#[derive(Debug, Error)]
+pub enum PotreeHierarchyError<ReadError: std::error::Error> {
+    #[error("parse hierarchy error: {0}")]
+    ParseHierarchy(#[from] ParseHierarchyError),
 
-    // allocate nodes
-    let mut nodes = vec![OctreeNode::default(); num_nodes];
+    #[error("load points error: {0}")]
+    ParsePoints(#[from] LoadPointsError),
 
-    // set first node
-    nodes[0] = proxy_node.clone();
-    // remove the parent because it becomes the root
-    nodes[0].parent = None;
+    #[error("Read error: {0}")]
+    Read(ReadError),
 
-    // position of the next node to write in
-    let mut node_pos = 1;
-
-    // the first node is always the root of the (sub-)hierarchy we are loading
-    for i in 0..num_nodes {
-        let current = &mut nodes[i];
-
-        let header: HierarchyNodeEntry = cursor.read_le()?;
-
-        if matches!(current.node_type, NodeType::Proxy) {
-            current.byte_offset = header.byte_offset;
-            current.byte_size = header.byte_size;
-            current.num_points = header.num_points;
-        } else if header.r#type == 2 {
-            current.hierarchy_byte_offset = header.byte_offset;
-            current.hierarchy_byte_size = header.byte_size;
-            current.num_points = header.num_points;
-        } else {
-            current.byte_offset = header.byte_offset;
-            current.byte_size = header.byte_size;
-            current.num_points = header.num_points;
-        }
-
-        if current.byte_size == 0 {
-            // workaround for issue https://github.com/potree/potree/issues/1125
-            // some inner nodes erroneously report >0 points even though have 0 points
-            // however, they still report a ByteSize of 0, so based on that we now set node.NumPoints to 0
-            current.num_points = 0;
-        }
-
-        current.node_type = header.r#type.into();
-
-        if matches!(current.node_type, NodeType::Proxy) {
-            // the children are not yet known, no need to process them
-            continue;
-        }
-
-        let mut children: [usize; 8] = [0_usize; 8];
-
-        // clone/copy just what we need
-        let (current_name, current_bounding_box, current_spacing, current_level) = (
-            current.name.clone(),
-            current.bounding_box.clone(),
-            current.spacing,
-            current.level,
-        );
-
-        for child_index in 0_u8..8 {
-            let child_exists = ((1 << child_index) & header.child_mask) != 0;
-            if !child_exists {
-                continue;
-            }
-
-            // get mutable access to the pre-allocated child
-            let child = &mut nodes[node_pos];
-            child
-                .name
-                .push_str(&format!("{}{}", current_name, child_index));
-            child.bounding_box = create_child_aabb(&current_bounding_box, child_index);
-            child.spacing = current_spacing / 2.0;
-            child.level = current_level + 1;
-            child.parent = Some(i);
-            child.child_index = child_index;
-
-            children[child_index as usize] = node_pos;
-
-            // increment node_pos for the next child
-            node_pos += 1;
-        }
-
-        // finally, append the children to the parent
-        let current = &mut nodes[i];
-        current.children = children;
-        current.children_mask = header.child_mask;
-    }
-
-    Ok(nodes)
+    #[error("There is nothing to load because node is not a proxy")]
+    NothingToLoad,
 }
