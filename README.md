@@ -7,8 +7,10 @@ Features / Roadmap:
 - [x] Native & WASM compatibility
 - [x] WASM Multithread compatibility (using SharedArrayBuffer and specific http headers)
 - [x] Provide a simple slab implementation to load points progressively
-- [-] Load points (in progress, not all attributes are loaded for the moment)
-- [ ] Make datasource customizable (`ResourceLoader` should be a trait)
+- [x] Customizable datasource (through `PotreeAsset` trait)
+- [x] Blocking API (through `BlockingPotreeAsset` trait)
+- [x] Brotli encoding support
+- [ ] Load points (in progress, not all attributes are loaded for the moment)
 
 ## Download sample potree file
 
@@ -53,7 +55,23 @@ Then, it loads the root node points.
 
 
 ```bash
-cargo run --features="fs tokio_dev" --example read_native_slab
+cargo run --features="fs tokio_dev slab" --example read_native_slab
+```
+
+### Load points from local filesystem in a blocking way (no async deps)
+
+This example loads points from local filesystem:
+
+```bash
+cargo run --features="blocking_fs" --example read_native_blocking_fs
+```
+
+### Load points from http using reqwest blocking api
+
+This example loads points from local filesystem:
+
+```bash
+cargo run --features="blocking_reqwest" --example read_native_blocking_http
 ```
 
 ## Build WASM example
@@ -93,6 +111,7 @@ node serve.js
 
 Open the browser at address http://localhost:8080/wasm/ and check network / console panels to see the requests / logs.
 
+Open http://localhost:8080/wasm/worker.html for the worker example.
 
 ## Credits
 
