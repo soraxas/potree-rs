@@ -45,7 +45,6 @@ thiserror = "2"
 tracing = "0.1"
 async-trait = "0.1"
 tokio = { version = "1", features = ["fs", "io-util"], optional = true }
-async-fs = { version = "2.0", optional = true }
 futures = "0.3"
 reqwest = { version = "0.12", optional = true, features = ["json"] }
 ehttp = { version = "0.5", optional = true }
@@ -70,7 +69,6 @@ fs = []
 blocking_fs = []
 tokio = ["dep:tokio", "tokio/rt"]
 tokio_dev = ["tokio/macros", "tokio/rt"]
-async-fs = ["dep:async-fs"]
 reqwest = ["tokio", "dep:reqwest"]
 blocking_reqwest = ["reqwest/blocking"]
 wasm = ["ehttp", "dep:wasm-bindgen", "dep:wasm-bindgen-futures"]
