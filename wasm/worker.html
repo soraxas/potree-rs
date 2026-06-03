@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="en">
+
+<body style="margin: 0;">
+<script type="module">
+    import init from './read_wasm_worker.js'
+
+    init().catch((error) => {
+        if (!error.message.startsWith("Cursed hack to keep workers alive. See https://github.com/rustwasm/wasm-bindgen/issues/2945")) {
+            throw error;
+        }
+    });
+</script>
+</body>
+
+</html>

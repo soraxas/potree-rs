@@ -1,26 +1,8 @@
-use potree::prelude::*;
+use potree::{point_cloud::PointCloudAsync, prelude::*};
+use tracing::info;
 use tracing_subscriber::fmt;
 use tracing_subscriber_wasm::MakeConsoleWriter;
-use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::spawn_local;
-
-#[wasm_bindgen]
-extern "C" {
-    // Use `js_namespace` here to bind `console.log(..)` instead of just
-    // `log(..)`
-    #[wasm_bindgen(js_namespace = console)]
-    fn log(s: &str);
-
-    // The `console.log` is quite polymorphic, so we can bind it with multiple
-    // signatures. Note that we need to use `js_name` to ensure we always call
-    // `log` in JS.
-    #[wasm_bindgen(js_namespace = console, js_name = log)]
-    fn log_u32(a: u32);
-
-    // Multiple arguments too!
-    #[wasm_bindgen(js_namespace = console, js_name = log)]
-    fn log_many(a: &str, b: &str);
-}
 
 pub fn main() {
     fmt()
@@ -34,19 +16,15 @@ pub fn main() {
         .without_time()
         .init();
 
-    // must be instantiated in main thread
-    let resource_loader = ResourceLoader::new();
-
-    log("Hello from thread!");
+    info!("Hello from thread!");
 
     spawn_local(async move {
-        log("Hello from spawned local!");
+        info!("Hello from spawned local!");
 
-        tracing::info!("Load pointcloud from local filesystem");
-        let mut point_cloud =
-            PointCloud::from_url("http://localhost:8080/assets/heidentor", resource_loader)
-                .await
-                .expect("Unable to load point cloud");
+        info!("Load pointcloud from local filesystem");
+        let mut point_cloud = PointCloud::from_http_url("/assets/heidentor/metadata.json")
+            .await
+            .expect("Unable to load point cloud");
 
         tracing::info!("Successfuly loaded point cloud hierarchy.");
         let snapshot = point_cloud.hierarchy_snapshot();

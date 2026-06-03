@@ -1,21 +1,20 @@
-use potree::{asset::http::PotreeHttpAsset, hierarchy::HierarchyAsync, prelude::*};
+use potree::{
+    blocking::{asset::http::BlockingPotreeHttpAsset, hierarchy::HierarchySync},
+    prelude::*,
+};
 
-#[tokio::main(flavor = "current_thread")]
-pub async fn main() -> Result<(), Box<dyn std::error::Error + 'static>> {
+pub fn main() -> Result<(), Box<dyn std::error::Error + 'static>> {
     tracing_subscriber::fmt::init();
 
     let url: &str = "https://potree.org/pointclouds/heidentor/";
 
-    let asset = PotreeHttpAsset::from_url(url);
+    let asset = BlockingPotreeHttpAsset::from_url(url);
 
     tracing::info!("Load pointcloud from url {}", url);
-    let hierarchy = Hierarchy::new(asset)
-        .await
-        .expect("Unable to load point cloud");
+    let hierarchy = Hierarchy::new_blocking(asset).expect("Unable to load point cloud");
 
     let nodes = hierarchy
         .load_initial_hierarchy()
-        .await
         .expect("Unable to load initial hierarchy");
     tracing::info!(
         "Successfuly loaded point cloud hierarchy with {} nodes",
@@ -24,7 +23,6 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error + 'static>> {
 
     let points = hierarchy
         .load_points(&nodes[0])
-        .await
         .expect("Unable to load points");
     tracing::info!(
         "Successfuly loaded {} points for the root node",

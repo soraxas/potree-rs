@@ -1,93 +1,77 @@
-use crate::hierarchy::Hierarchy;
-use crate::metadata::{LoadPointsError, Points};
+#[cfg(feature = "fs")]
+use crate::asset::fs::PotreeFsAsset;
+#[cfg(any(feature = "reqwest", feature = "ehttp"))]
+use crate::asset::http::PotreeHttpAsset;
+use crate::asset::url::PotreeUrlAsset;
+use crate::asset::PotreeAsset;
+use crate::hierarchy::{Hierarchy, HierarchyAsync, PotreeHierarchyError};
+use crate::metadata::Points;
 use crate::octree::node::{iter_one_bits, NodeType, OctreeNode};
 use crate::octree::snapshot::OctreeNodeSnapshot;
 use crate::octree::{NodeId, Octree};
-use crate::resource::{BufferClient, ResourceError, ResourceLoader};
+use async_trait::async_trait;
 use binrw::prelude::*;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
-pub enum LoadPotreePointCloudError {
-    #[error("Error loading metadatas: {0}")]
-    LoadMetadataError(ResourceError),
-
+pub enum PotreePointCloudError<ReadError: std::error::Error> {
     #[error("Error loading hierarchy: {0}")]
-    ReadHierarchyError(#[from] ReadHierarchyError),
+    Hierarchy(#[from] PotreeHierarchyError<ReadError>),
 
-    #[error("Error loading resource: {0}")]
-    ResourceError(#[from] ResourceError),
-}
-
-#[derive(Error, Debug)]
-pub enum ReadHierarchyError {
-    #[error("Hierarchy is already loaded")]
-    AlreadyLoaded,
-
-    #[error("Invalid json: {0}")]
-    JsonError(#[from] serde_json::error::Error),
-
-    #[error("IO Error")]
-    Io(#[from] std::io::Error),
-
-    #[error("Resource error: {0}")]
-    Resource(#[from] ResourceError),
-
-    #[error("Invalid binary data")]
-    InvalidBinaryData(#[from] binrw::error::Error),
-
-    #[error("There is nothing to load because node is not a proxy")]
-    NothingToLoad,
-
-    #[error("The referenced node does not exist")]
-    NodeNotFound,
+    #[error("Node not found: {0}")]
+    NodeNotFound(NodeId),
 }
 
 #[derive(Clone, Debug)]
-pub struct PointCloud {
-    hierarchy: Hierarchy,
-    octree: Octree<OctreeNode>,
+pub struct PointCloud<T> {
+    pub(crate) hierarchy: Hierarchy<T>,
+    pub(crate) octree: Octree<OctreeNode>,
 }
 
-impl PointCloud {
+#[async_trait]
+pub trait PointCloudAsync<T: PotreeAsset> {
+    async fn load_initial_hierarchy(&mut self) -> Result<(), PotreeHierarchyError<T::Error>>;
+
+    async fn load_hierarchy(
+        &mut self,
+        node_id: NodeId,
+    ) -> Result<(), PotreePointCloudError<T::Error>>;
+
+    async fn load_entire_hierarchy(&mut self) -> Result<(), PotreePointCloudError<T::Error>>;
+
+    async fn load_entire_hierarchy_recursive(
+        &mut self,
+        node_id: NodeId,
+    ) -> Result<(), PotreePointCloudError<T::Error>>;
+
+    // Functions to load points
+    async fn load_points(&self, node_id: NodeId)
+        -> Result<Points, PotreePointCloudError<T::Error>>;
+}
+
+#[async_trait]
+impl<T: PotreeAsset> PointCloudAsync<T> for PointCloud<T> {
     /// Load a Potree point cloud from a URL.
     /// Relatives urls works only if the provided client supports it.
     /// Metadatas, hierarchy and octree are supposed to be accessible relatively to the provided url:
     ///  - Metadata: `<url>/metadata.json`
     ///  - Hierarchy: `<url>/hierarchy.bin`
     ///  - Octree: `<url>/octree.bin`
-    pub async fn from_url(
-        url: &str,
-        resource_loader: ResourceLoader,
-    ) -> Result<PointCloud, LoadPotreePointCloudError> {
-        let hierarchy = Hierarchy::from_url(url, resource_loader).await?;
-        let octree = Octree::new();
+    // pub async fn from_url(
+    //     url: &str,
+    //     resource_loader: ResourceLoader,
+    // ) -> Result<PointCloud<T>, PotreeHierarchyError<T>> {
+    //     let hierarchy = Hierarchy::from_url(url, resource_loader).await?;
+    //     let octree = Octree::new();
 
-        let mut this = Self { hierarchy, octree };
+    //     let mut this = Self { hierarchy, octree };
 
-        this.load_initial_hierarchy().await?;
+    //     this.load_initial_hierarchy().await?;
 
-        Ok(this)
-    }
+    //     Ok(this)
+    // }
 
-    /// Build a point cloud from in-memory Potree buffers.
-    /// The `name` is used as the base path (e.g. `name/metadata.json`).
-    pub async fn from_buffers(
-        name: &str,
-        metadata_json: Vec<u8>,
-        hierarchy_bin: Vec<u8>,
-        octree_bin: Vec<u8>,
-    ) -> Result<PointCloud, LoadPotreePointCloudError> {
-        let mem = BufferClient::from_entries([
-            (format!("{name}/metadata.json"), metadata_json),
-            (format!("{name}/hierarchy.bin"), hierarchy_bin),
-            (format!("{name}/octree.bin"), octree_bin),
-        ]);
-
-        Self::from_url(name, ResourceLoader::new().with_buffer(mem)).await
-    }
-
-    async fn load_initial_hierarchy(&mut self) -> Result<(), ReadHierarchyError> {
+    async fn load_initial_hierarchy(&mut self) -> Result<(), PotreeHierarchyError<T::Error>> {
         // load root node metadatas
         let initial_hierarchy = self.hierarchy.load_initial_hierarchy().await?;
 
@@ -124,12 +108,15 @@ impl PointCloud {
         Ok(())
     }
 
-    pub async fn load_hierarchy(&mut self, node_id: NodeId) -> Result<(), ReadHierarchyError> {
+    async fn load_hierarchy(
+        &mut self,
+        node_id: NodeId,
+    ) -> Result<(), PotreePointCloudError<T::Error>> {
         // get the root node
         let node = self
             .octree
             .node(node_id)
-            .ok_or_else(|| ReadHierarchyError::NodeNotFound)?;
+            .ok_or_else(|| PotreePointCloudError::NodeNotFound(node_id))?;
 
         if matches!(node.node_type, NodeType::Proxy) {
             let nodes = self.hierarchy.load_hierarchy(node).await?;
@@ -169,7 +156,7 @@ impl PointCloud {
                     let existing_node = self
                         .octree
                         .node_mut(node_id)
-                        .ok_or_else(|| ReadHierarchyError::NodeNotFound)?;
+                        .ok_or_else(|| PotreePointCloudError::NodeNotFound(node_id))?;
                     existing_node.node_type = node.node_type;
                     existing_node.num_points = node.num_points;
                     existing_node.byte_offset = node.byte_offset;
@@ -183,12 +170,12 @@ impl PointCloud {
         Ok(())
     }
 
-    pub async fn load_entire_hierarchy(&mut self) -> Result<(), ReadHierarchyError> {
+    async fn load_entire_hierarchy(&mut self) -> Result<(), PotreePointCloudError<T::Error>> {
         // get the root node
         let root = self
             .octree
             .root()
-            .ok_or_else(|| ReadHierarchyError::NodeNotFound)?;
+            .ok_or_else(|| PotreePointCloudError::NodeNotFound(self.octree.root_id()))?;
         let children = root.children;
 
         for i in iter_one_bits(root.children_mask) {
@@ -199,10 +186,10 @@ impl PointCloud {
         Ok(())
     }
 
-    pub async fn load_entire_hierarchy_recursive(
+    async fn load_entire_hierarchy_recursive(
         &mut self,
         node_id: NodeId,
-    ) -> Result<(), ReadHierarchyError> {
+    ) -> Result<(), PotreePointCloudError<T::Error>> {
         // load node's hierarchy if needed
         self.load_hierarchy(node_id).await?;
 
@@ -210,7 +197,7 @@ impl PointCloud {
         let node = self
             .octree
             .node(node_id)
-            .ok_or_else(|| ReadHierarchyError::NodeNotFound)?;
+            .ok_or_else(|| PotreePointCloudError::NodeNotFound(node_id))?;
 
         let children = node.children;
 
@@ -222,6 +209,101 @@ impl PointCloud {
         Ok(())
     }
 
+    // Functions to load points
+    async fn load_points(
+        &self,
+        node_id: NodeId,
+    ) -> Result<Points, PotreePointCloudError<T::Error>> {
+        let node = self
+            .octree
+            .node(node_id)
+            .ok_or(PotreePointCloudError::NodeNotFound(node_id))?;
+
+        Ok(self.hierarchy.load_points(node).await?)
+    }
+}
+
+impl PointCloud<PotreeUrlAsset> {
+    /// Load a Potree point cloud from a URL.
+    /// Relatives urls works only if the provided client supports it.
+    /// Metadatas, hierarchy and octree are supposed to be accessible relatively to the provided url:
+    ///  - Metadata: `<url>/metadata.json`
+    ///  - Hierarchy: `<url>/hierarchy.bin`
+    ///  - Octree: `<url>/octree.bin`
+    pub async fn from_url(
+        url: &str,
+    ) -> Result<
+        PointCloud<PotreeUrlAsset>,
+        PotreeHierarchyError<<PotreeUrlAsset as PotreeAsset>::Error>,
+    > {
+        let hierarchy = Hierarchy::from_url(url)
+            .await
+            .map_err(|err| PotreeHierarchyError::Read(err))?;
+        let octree = Octree::new();
+
+        let mut this = Self { hierarchy, octree };
+
+        this.load_initial_hierarchy().await?;
+
+        Ok(this)
+    }
+}
+
+#[cfg(any(feature = "reqwest", feature = "ehttp"))]
+impl PointCloud<PotreeHttpAsset> {
+    /// Load a Potree point cloud from a URL.
+    /// Relatives urls works only if the provided client supports it.
+    /// Metadatas, hierarchy and octree are supposed to be accessible relatively to the provided url:
+    ///  - Metadata: `<url>/metadata.json`
+    ///  - Hierarchy: `<url>/hierarchy.bin`
+    ///  - Octree: `<url>/octree.bin`
+    pub async fn from_http_url(
+        url: &str,
+    ) -> Result<
+        PointCloud<PotreeHttpAsset>,
+        PotreeHierarchyError<<PotreeHttpAsset as PotreeAsset>::Error>,
+    > {
+        let hierarchy = Hierarchy::from_http_url(url)
+            .await
+            .map_err(|err| PotreeHierarchyError::Read(err))?;
+        let octree = Octree::new();
+
+        let mut this = Self { hierarchy, octree };
+
+        this.load_initial_hierarchy().await?;
+
+        Ok(this)
+    }
+}
+
+#[cfg(feature = "fs")]
+impl PointCloud<PotreeFsAsset> {
+    /// Load a Potree point cloud from a URL.
+    /// Relatives urls works only if the provided client supports it.
+    /// Metadatas, hierarchy and octree are supposed to be accessible relatively to the provided url:
+    ///  - Metadata: `<url>/metadata.json`
+    ///  - Hierarchy: `<url>/hierarchy.bin`
+    ///  - Octree: `<url>/octree.bin`
+    pub async fn from_path(
+        url: &str,
+    ) -> Result<
+        PointCloud<PotreeFsAsset>,
+        PotreeHierarchyError<<PotreeFsAsset as PotreeAsset>::Error>,
+    > {
+        let hierarchy = Hierarchy::from_path(url)
+            .await
+            .map_err(|err| PotreeHierarchyError::Read(err))?;
+        let octree = Octree::new();
+
+        let mut this = Self { hierarchy, octree };
+
+        this.load_initial_hierarchy().await?;
+
+        Ok(this)
+    }
+}
+
+impl<T> PointCloud<T> {
     /// Takes a snapshot of the current loaded hierarchy and return it
     pub fn hierarchy_snapshot(&self) -> Vec<OctreeNodeSnapshot> {
         let Some(root) = self.octree.root() else {
@@ -269,29 +351,8 @@ impl PointCloud {
         nodes
     }
 
-    // Functions to load points
-    pub async fn load_points(&self, node_id: NodeId) -> Result<Points, LoadPointsError> {
-        let node = self
-            .octree
-            .node(node_id)
-            .ok_or(LoadPointsError::NodeNotFound)?;
-
-        self.hierarchy.load_points(node).await
-    }
-
     // Functions to access the octree
     pub fn octree(&self) -> &Octree<OctreeNode> {
         &self.octree
     }
-}
-
-#[binrw]
-#[derive(Clone, Debug)]
-#[br(little)]
-pub struct HierarchyNodeEntry {
-    pub r#type: u8,
-    pub child_mask: u8,
-    pub num_points: u32,
-    pub byte_offset: u64,
-    pub byte_size: u64,
 }

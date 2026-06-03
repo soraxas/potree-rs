@@ -14,7 +14,7 @@ set -ex
 
 RUSTFLAGS='--cfg getrandom_backend="wasm_js"' \
   cargo +nightly build \
-      --features="wasm" \
+      --features="wasm slab" \
       --example read_wasm \
       --target wasm32-unknown-unknown \
       --profile wasm-release \

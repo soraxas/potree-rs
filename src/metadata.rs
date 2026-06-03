@@ -2,7 +2,6 @@ use crate::morton::{read_morton_128, read_morton_64};
 use crate::octree::aabb::Aabb;
 use crate::octree::node::{NodeType, OctreeNode};
 use crate::point::PointData;
-use crate::resource::{ResourceError, ResourceLoader};
 use byteorder::{ByteOrder, LittleEndian};
 use glam::{DVec3, U8Vec3, UVec3};
 use serde::Deserialize;
@@ -21,12 +20,6 @@ pub struct Points {
 
 #[derive(Error, Debug)]
 pub enum LoadPointsError {
-    #[error("Node does not exists")]
-    NodeNotFound,
-
-    #[error("Resource error: {0}")]
-    Resource(#[from] ResourceError),
-
     #[error("Encoding not implemented: {0}")]
     EncodingUnimplemented(String),
 
@@ -108,6 +101,7 @@ pub struct AttributeMetadata {
 }
 
 impl Metadata {
+    #[allow(unused)]
     pub(crate) fn create_flat_root_node(&self) -> OctreeNode {
         OctreeNode {
             name: "r".to_string(),
@@ -128,29 +122,6 @@ impl Metadata {
         let points = match self.encoding.as_str() {
             "BROTLI" => self.parse_points_brotli(num_points, bounding_box, buffer)?,
             "DEFAULT" => self.parse_points_default(num_points, bounding_box, buffer)?,
-            _ => {
-                return Err(LoadPointsError::EncodingUnimplemented(
-                    self.encoding.clone(),
-                ));
-            }
-        };
-
-        Ok(points)
-    }
-
-    pub async fn load_points_for_node(
-        &self,
-        node: &OctreeNode,
-        octree_url: &str,
-        resource_loader: &ResourceLoader,
-    ) -> Result<Points, LoadPointsError> {
-        let buffer = resource_loader
-            .get_range(octree_url, node.byte_offset, node.byte_size as usize, None)
-            .await?;
-
-        let points = match self.encoding.as_str() {
-            "BROTLI" => self.parse_points_brotli(node.num_points, &node.bounding_box, &buffer)?,
-            "DEFAULT" => self.parse_points_default(node.num_points, &node.bounding_box, &buffer)?,
             _ => {
                 return Err(LoadPointsError::EncodingUnimplemented(
                     self.encoding.clone(),
