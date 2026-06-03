@@ -1,8 +1,9 @@
-use super::{ResourceClient, ResourceError};
+use crate::asset::PotreeAsset;
+use crate::metadata::Metadata;
 use async_trait::async_trait;
+use bytes::Bytes;
 #[cfg(feature = "convert")]
 use std::collections::VecDeque;
-use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 #[cfg(feature = "convert")]
@@ -781,90 +782,84 @@ pub fn build_potree_buffers_with_options(
     })
 }
 
+/// An in-memory Potree dataset implementing [`PotreeAsset`].
+///
+/// This is the read-side counterpart of [`PotreeBuffers`]: convert a point
+/// cloud in memory, then serve it straight back through the regular
+/// `Hierarchy` / `PointCloud` readers without touching the filesystem.
 #[derive(Clone, Debug, Default)]
-pub struct BufferClient {
-    store: Arc<HashMap<String, Arc<Vec<u8>>>>,
+pub struct PotreeBufferAsset {
+    metadata_json: Arc<Vec<u8>>,
+    hierarchy: Arc<Vec<u8>>,
+    octree: Arc<Vec<u8>>,
 }
 
-impl BufferClient {
-    pub fn new() -> Self {
+impl PotreeBufferAsset {
+    pub fn new(metadata_json: Vec<u8>, hierarchy: Vec<u8>, octree: Vec<u8>) -> Self {
         Self {
-            store: Arc::new(HashMap::new()),
+            metadata_json: Arc::new(metadata_json),
+            hierarchy: Arc::new(hierarchy),
+            octree: Arc::new(octree),
         }
-    }
-
-    pub fn from_entries<I, K>(entries: I) -> Self
-    where
-        I: IntoIterator<Item = (K, Vec<u8>)>,
-        K: Into<String>,
-    {
-        let mut store = HashMap::new();
-        for (key, data) in entries {
-            store.insert(normalize_key(&key.into()), Arc::new(data));
-        }
-        Self {
-            store: Arc::new(store),
-        }
-    }
-
-    pub fn insert(&mut self, url: impl Into<String>, data: Vec<u8>) {
-        let key = normalize_key(&url.into());
-        let map = Arc::make_mut(&mut self.store);
-        map.insert(key, Arc::new(data));
-    }
-
-    pub fn contains(&self, url: &str) -> bool {
-        let key = normalize_key(url);
-        self.store.contains_key(&key)
-    }
-
-    fn resolve(&self, url: &str) -> Option<Arc<Vec<u8>>> {
-        let key = normalize_key(url);
-        self.store.get(&key).cloned()
     }
 }
 
-fn normalize_key(url: &str) -> String {
-    if let Some(stripped) = url.strip_prefix("buffer://") {
-        stripped.trim_start_matches('/').to_string()
-    } else {
-        url.to_string()
+#[cfg(feature = "convert")]
+impl From<PotreeBuffers> for PotreeBufferAsset {
+    fn from(buffers: PotreeBuffers) -> Self {
+        Self::new(buffers.metadata_json, buffers.hierarchy, buffers.octree)
     }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum PotreeBufferAssetError {
+    #[error("JSON error: {0}")]
+    Json(#[from] serde_json::Error),
+
+    #[error("Range {offset}+{length} out of bounds for in-memory {target} (len {len})")]
+    OutOfBounds {
+        target: &'static str,
+        offset: u64,
+        length: usize,
+        len: usize,
+    },
+}
+
+fn slice_range(
+    data: &[u8],
+    target: &'static str,
+    offset: u64,
+    length: usize,
+) -> Result<Bytes, PotreeBufferAssetError> {
+    let out_of_bounds = || PotreeBufferAssetError::OutOfBounds {
+        target,
+        offset,
+        length,
+        len: data.len(),
+    };
+
+    let start = usize::try_from(offset).map_err(|_| out_of_bounds())?;
+    let end = start.checked_add(length).ok_or_else(out_of_bounds)?;
+    if end > data.len() {
+        return Err(out_of_bounds());
+    }
+
+    Ok(Bytes::copy_from_slice(&data[start..end]))
 }
 
 #[async_trait]
-impl ResourceClient for BufferClient {
-    async fn get(
-        &self,
-        url: &str,
-        _headers: Option<BTreeMap<String, String>>,
-    ) -> Result<Vec<u8>, ResourceError> {
-        let data = self
-            .resolve(url)
-            .ok_or_else(|| ResourceError::Other(format!("Memory resource missing: {url}")))?;
-        Ok(data.to_vec())
+impl PotreeAsset for PotreeBufferAsset {
+    type Error = PotreeBufferAssetError;
+
+    async fn read_metadata(&self) -> Result<Metadata, Self::Error> {
+        Ok(serde_json::from_slice(&self.metadata_json)?)
     }
 
-    async fn get_range(
-        &self,
-        url: &str,
-        offset: u64,
-        length: usize,
-        _headers: Option<BTreeMap<String, String>>,
-    ) -> Result<Vec<u8>, ResourceError> {
-        let data = self
-            .resolve(url)
-            .ok_or_else(|| ResourceError::Other(format!("Memory resource missing: {url}")))?;
+    async fn read_hierarchy(&self, offset: u64, length: usize) -> Result<Bytes, Self::Error> {
+        slice_range(&self.hierarchy, "hierarchy.bin", offset, length)
+    }
 
-        let start = offset as usize;
-        if start > data.len() {
-            return Err(ResourceError::Other(format!(
-                "Offset {offset} out of bounds for {url}"
-            )));
-        }
-
-        let end = (offset as usize).saturating_add(length).min(data.len());
-
-        Ok(data[start..end].to_vec())
+    async fn read_octree(&self, offset: u64, length: usize) -> Result<Bytes, Self::Error> {
+        slice_range(&self.octree, "octree.bin", offset, length)
     }
 }

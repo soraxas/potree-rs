@@ -26,7 +26,7 @@ required-features = ["blocking_fs"]
 
 [[example]]
 name = "read_native_fs_ply"
-required-features = ["fs", "convert"]
+required-features = ["convert", "slab", "tokio_dev"]
 
 [[example]]
 path = "examples/read_native_http.rs"
@@ -87,7 +87,7 @@ wasm = ["ehttp", "dep:wasm-bindgen", "dep:wasm-bindgen-futures"]
 wasm_worker = ["ehttp_local", "dep:wasm-bindgen", "dep:wasm-bindgen-futures"]
 ehttp = ["dep:ehttp"]
 ehttp_local = ["ehttp", "wasm", "dep:wasm-bindgen-futures"]
-convert = ["dep:clap", "dep:ply-rs-bw", "dep:rand", "dep:rayon", "dep:tempfile"]
+convert = ["fs", "dep:clap", "dep:ply-rs-bw", "dep:rand", "dep:rayon", "dep:tempfile"]
 slab = ["dep:slab"]
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]

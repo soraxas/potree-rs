@@ -1,4 +1,4 @@
-use crate::resource::buffer::{
+use crate::convert::buffer::{
     build_metadata_json, compute_scale_offset, estimate_spacing, ConvertError,
     HIERARCHY_BYTES_PER_NODE,
 };

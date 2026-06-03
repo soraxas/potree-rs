@@ -1,10 +1,11 @@
 //! Load a local PLY, convert to Potree buffers in-memory, and read it via the existing loader.
 //!
 //! Run with:
-//! `cargo run --example read_native_fs_ply --features="convert fs tokio_dev" -- <path/to/file.ply> [scale]`
+//! `cargo run --example read_native_fs_ply --features="convert slab tokio_dev" -- <path/to/file.ply> [scale]`
 
 use potree::convert::ply_loader::load_ply_positions;
 use potree::octree::node::{iter_one_bits, NodeType};
+use potree::point_cloud::PointCloudAsync;
 use potree::prelude::*;
 use std::collections::VecDeque;
 use std::env;
@@ -40,7 +41,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .build()?;
 
     let mut point_cloud = PointCloud::from_buffers(
-        name,
         buffers.metadata_json,
         buffers.hierarchy,
         buffers.octree,

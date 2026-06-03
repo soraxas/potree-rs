@@ -10,6 +10,7 @@
 ///    exactly once across all nodes.
 use byteorder::{ByteOrder, LittleEndian};
 use potree::convert::streaming::convert_ply_streaming;
+use potree::hierarchy::HierarchyAsync;
 use potree::octree::node::NodeType;
 use potree::prelude::*;
 use std::collections::HashSet;
@@ -127,10 +128,8 @@ async fn roundtrip_positions_match_input() {
     write_ascii_ply(&source, &input);
     convert_ply_streaming(&input, &output, "test", "", [0.001; 3], 2, 5, Some(42), "DEFAULT").unwrap();
 
-    // Load back through the Rust reader using the file:// resource loader.
-    // file:// strips the prefix, so "file:///abs/path" → "/abs/path".
-    let url = format!("file://{}", output.display());
-    let hierarchy = Hierarchy::from_url(&url, ResourceLoader::new())
+    // Load back through the Rust reader using the filesystem asset.
+    let hierarchy = Hierarchy::from_path(&output)
         .await
         .expect("failed to load hierarchy from converted output");
 
@@ -237,8 +236,7 @@ async fn deep_tree_uses_hierarchy_chunking() {
     }
 
     // Round-trip: all 8 points should still be recovered.
-    let url = format!("file://{}", output.display());
-    let hierarchy = Hierarchy::from_url(&url, ResourceLoader::new()).await.unwrap();
+    let hierarchy = Hierarchy::from_path(&output).await.unwrap();
     let nodes = hierarchy.load_entire_hierarchy().await.unwrap();
     let mut decoded_count = 0usize;
     for node in &nodes {
@@ -276,8 +274,7 @@ async fn brotli_encoding_roundtrip() {
         "metadata encoding should be BROTLI"
     );
 
-    let url = format!("file://{}", output.display());
-    let hierarchy = Hierarchy::from_url(&url, ResourceLoader::new())
+    let hierarchy = Hierarchy::from_path(&output)
         .await
         .expect("failed to load BROTLI hierarchy");
     let nodes = hierarchy.load_entire_hierarchy().await.unwrap();

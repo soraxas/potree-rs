@@ -8,7 +8,7 @@ use ply_rs_bw::{
 };
 use thiserror::Error;
 
-use crate::resource::buffer::PotreeBuilder;
+use crate::convert::buffer::PotreeBuilder;
 
 #[derive(Debug, Error)]
 pub enum PlyLoadError {
