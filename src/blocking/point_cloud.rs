@@ -191,7 +191,7 @@ impl PointCloud<BlockingPotreeHttpAsset> {
     > {
         let hierarchy = Hierarchy::from_http_url_blocking(url)
             .await
-            .map_err(|err| PotreeHierarchyError::Read(err))?;
+            .map_err(PotreeHierarchyError::Read)?;
         let octree = Octree::new();
 
         let mut this = Self { hierarchy, octree };

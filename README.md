@@ -10,7 +10,7 @@ Features / Roadmap:
 - [x] Customizable datasource (through `PotreeAsset` trait)
 - [x] Blocking API (through `BlockingPotreeAsset` trait)
 - [x] Brotli encoding support
-- [ ] Load points (in progress, not all attributes are loaded for the moment)
+- [x] Load points
 
 ## Download sample potree file
 

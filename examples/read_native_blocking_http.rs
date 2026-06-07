@@ -26,7 +26,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error + 'static>> {
         .expect("Unable to load points");
     tracing::info!(
         "Successfuly loaded {} points for the root node",
-        points.points.len()
+        points.buffer.count
     );
 
     Ok(())

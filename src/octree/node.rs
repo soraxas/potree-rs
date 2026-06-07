@@ -46,7 +46,7 @@ pub struct OctreeNode {
     pub name: String,
     pub child_index: u8,
     pub bounding_box: Aabb,
-    pub spacing: f64,
+    pub spacing: f32,
     pub level: u32,
     pub node_type: NodeType,
     pub num_points: u32,

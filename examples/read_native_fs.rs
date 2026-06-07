@@ -31,9 +31,14 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error + 'static>> {
             match hierarchy.load_points(&node).await {
                 Ok(points) => {
                     tracing::info!(
-                        "Loaded {} points for node {}",
-                        points.points.len(),
-                        node.name
+                        "Loaded {} points for node {} with density {}",
+                        points.buffer.count,
+                        node.name,
+                        points.density,
+                    );
+                    tracing::info!(
+                        "First point attributes: {:#?}",
+                        points.buffer.get(0).map(|p| p.data)
                     );
                 }
                 Err(error) => {

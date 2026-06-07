@@ -30,7 +30,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error + 'static>> {
                 Ok(points) => {
                     tracing::info!(
                         "Loaded {} points for node {}",
-                        points.points.len(),
+                        points.buffer.count,
                         node.name
                     );
                 }

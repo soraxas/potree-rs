@@ -11,7 +11,7 @@ pub struct OctreeNodeSnapshot {
     pub child_index: u8,
     pub name: String,
     pub bounding_box: Aabb,
-    pub spacing: f64,
+    pub spacing: f32,
     pub level: u32,
     pub node_type: NodeType,
     pub num_points: u32,

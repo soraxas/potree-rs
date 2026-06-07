@@ -48,7 +48,7 @@ impl Hierarchy<BlockingPotreeUrlAsset> {
     ) -> Result<Self, <BlockingPotreeUrlAsset as BlockingPotreeAsset>::Error> {
         let asset = BlockingPotreeUrlAsset::from_url(url)?;
 
-        Ok(Self::new_blocking(asset)?)
+        Self::new_blocking(asset)
     }
 }
 
@@ -65,7 +65,7 @@ impl Hierarchy<BlockingPotreeHttpAsset> {
     ) -> Result<Self, <BlockingPotreeHttpAsset as BlockingPotreeAsset>::Error> {
         let asset = BlockingPotreeHttpAsset::from_url(url);
 
-        Ok(Self::new_blocking(asset)?)
+        Self::new_blocking(asset)
     }
 }
 

@@ -51,26 +51,6 @@ pub trait PointCloudAsync<T: PotreeAsset> {
 
 #[async_trait]
 impl<T: PotreeAsset> PointCloudAsync<T> for PointCloud<T> {
-    /// Load a Potree point cloud from a URL.
-    /// Relatives urls works only if the provided client supports it.
-    /// Metadatas, hierarchy and octree are supposed to be accessible relatively to the provided url:
-    ///  - Metadata: `<url>/metadata.json`
-    ///  - Hierarchy: `<url>/hierarchy.bin`
-    ///  - Octree: `<url>/octree.bin`
-    // pub async fn from_url(
-    //     url: &str,
-    //     resource_loader: ResourceLoader,
-    // ) -> Result<PointCloud<T>, PotreeHierarchyError<T>> {
-    //     let hierarchy = Hierarchy::from_url(url, resource_loader).await?;
-    //     let octree = Octree::new();
-
-    //     let mut this = Self { hierarchy, octree };
-
-    //     this.load_initial_hierarchy().await?;
-
-    //     Ok(this)
-    // }
-
     async fn load_initial_hierarchy(&mut self) -> Result<(), PotreeHierarchyError<T::Error>> {
         // load root node metadatas
         let initial_hierarchy = self.hierarchy.load_initial_hierarchy().await?;
@@ -238,7 +218,7 @@ impl PointCloud<PotreeUrlAsset> {
     > {
         let hierarchy = Hierarchy::from_url(url)
             .await
-            .map_err(|err| PotreeHierarchyError::Read(err))?;
+            .map_err(PotreeHierarchyError::Read)?;
         let octree = Octree::new();
 
         let mut this = Self { hierarchy, octree };
@@ -265,7 +245,7 @@ impl PointCloud<PotreeHttpAsset> {
     > {
         let hierarchy = Hierarchy::from_http_url(url)
             .await
-            .map_err(|err| PotreeHierarchyError::Read(err))?;
+            .map_err(PotreeHierarchyError::Read)?;
         let octree = Octree::new();
 
         let mut this = Self { hierarchy, octree };
@@ -292,7 +272,7 @@ impl PointCloud<PotreeFsAsset> {
     > {
         let hierarchy = Hierarchy::from_path(url)
             .await
-            .map_err(|err| PotreeHierarchyError::Read(err))?;
+            .map_err(PotreeHierarchyError::Read)?;
         let octree = Octree::new();
 
         let mut this = Self { hierarchy, octree };
