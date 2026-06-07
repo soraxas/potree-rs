@@ -74,7 +74,7 @@ impl Hierarchy<PotreeFsAsset> {
     ) -> Result<Self, <PotreeFsAsset as PotreeAsset>::Error> {
         let asset = PotreeFsAsset::from_path(path);
 
-        Ok(Self::new(asset).await?)
+        Self::new(asset).await
     }
 }
 

@@ -212,11 +212,9 @@ impl Metadata {
 
         Ok(Points {
             points,
-            density: if num_occupied_cells == 0 {
-                0
-            } else {
-                num_points / num_occupied_cells
-            },
+            density: num_points
+                .checked_div(num_occupied_cells)
+                .unwrap_or_default(),
         })
     }
 
@@ -295,11 +293,9 @@ impl Metadata {
 
         Ok(Points {
             points,
-            density: if num_occupied_cells == 0 {
-                0
-            } else {
-                num_points / num_occupied_cells
-            },
+            density: num_points
+                .checked_div(num_occupied_cells)
+                .unwrap_or_default(),
         })
     }
 }
