@@ -13,7 +13,7 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error + 'static>> {
     let potree_asset = PotreeFsAsset::from_path(path);
 
     tracing::info!("Load pointcloud from local filesystem path {}", path);
-    let hierarchy = Hierarchy::new(potree_asset).await?;
+    let hierarchy = Hierarchy::load(potree_asset).await?;
 
     let nodes = hierarchy
         .load_initial_hierarchy()

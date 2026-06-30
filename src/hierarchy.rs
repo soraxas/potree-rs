@@ -43,7 +43,7 @@ impl Hierarchy<PotreeUrlAsset> {
     pub async fn from_url(url: &str) -> Result<Self, <PotreeUrlAsset as PotreeAsset>::Error> {
         let asset = PotreeUrlAsset::from_url(url)?;
 
-        Self::new(asset).await
+        Self::load(asset).await
     }
 }
 
@@ -58,7 +58,7 @@ impl Hierarchy<PotreeHttpAsset> {
     pub async fn from_http_url(url: &str) -> Result<Self, <PotreeHttpAsset as PotreeAsset>::Error> {
         let asset = PotreeHttpAsset::from_url(url);
 
-        Self::new(asset).await
+        Self::load(asset).await
     }
 }
 
@@ -74,7 +74,7 @@ impl Hierarchy<PotreeFsAsset> {
     ) -> Result<Self, <PotreeFsAsset as PotreeAsset>::Error> {
         let asset = PotreeFsAsset::from_path(path);
 
-        Self::new(asset).await
+        Self::load(asset).await
     }
 }
 
@@ -114,7 +114,7 @@ impl<T: PotreeAsset> Hierarchy<T> {
     ///  - Metadata: `<url>/metadata.json`
     ///  - Hierarchy: `<url>/hierarchy.bin`
     ///  - Octree: `<url>/octree.bin`
-    pub async fn new(asset: T) -> Result<Self, T::Error> {
+    pub async fn load(asset: T) -> Result<Self, T::Error> {
         let metadata = asset.read_metadata().await?;
 
         Ok(Self { metadata, asset })
