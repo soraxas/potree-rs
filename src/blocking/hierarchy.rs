@@ -30,7 +30,7 @@ pub trait HierarchySync<T: BlockingPotreeAsset> {
 }
 
 impl<T: BlockingPotreeAsset> Hierarchy<T> {
-    pub fn new_blocking(asset: T) -> Result<Self, T::Error> {
+    pub fn load_blocking(asset: T) -> Result<Self, T::Error> {
         let metadata = asset.read_metadata()?;
 
         Ok(Self { metadata, asset })
@@ -43,12 +43,12 @@ impl Hierarchy<BlockingPotreeUrlAsset> {
     ///  - Metadata: `<url>/metadata.json`
     ///  - Hierarchy: `<url>/hierarchy.bin`
     ///  - Octree: `<url>/octree.bin`
-    pub async fn from_url_blocking(
+    pub async fn try_from_url_blocking(
         url: &str,
     ) -> Result<Self, <BlockingPotreeUrlAsset as BlockingPotreeAsset>::Error> {
         let asset = BlockingPotreeUrlAsset::from_url(url)?;
 
-        Self::new_blocking(asset)
+        Self::load_blocking(asset)
     }
 }
 
@@ -65,7 +65,7 @@ impl Hierarchy<BlockingPotreeHttpAsset> {
     ) -> Result<Self, <BlockingPotreeHttpAsset as BlockingPotreeAsset>::Error> {
         let asset = BlockingPotreeHttpAsset::from_url(url);
 
-        Self::new_blocking(asset)
+        Self::load_blocking(asset)
     }
 }
 

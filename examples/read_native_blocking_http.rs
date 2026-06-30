@@ -11,7 +11,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error + 'static>> {
     let asset = BlockingPotreeHttpAsset::from_url(url);
 
     tracing::info!("Load pointcloud from url {}", url);
-    let hierarchy = Hierarchy::new_blocking(asset).expect("Unable to load point cloud");
+    let hierarchy = Hierarchy::load_blocking(asset).expect("Unable to load point cloud");
 
     let nodes = hierarchy
         .load_initial_hierarchy()

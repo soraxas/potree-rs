@@ -40,7 +40,7 @@ impl Hierarchy<PotreeUrlAsset> {
     ///  - Metadata: `<url>/metadata.json`
     ///  - Hierarchy: `<url>/hierarchy.bin`
     ///  - Octree: `<url>/octree.bin`
-    pub async fn from_url(url: &str) -> Result<Self, <PotreeUrlAsset as PotreeAsset>::Error> {
+    pub async fn try_from_url(url: &str) -> Result<Self, <PotreeUrlAsset as PotreeAsset>::Error> {
         let asset = PotreeUrlAsset::from_url(url)?;
 
         Self::load(asset).await

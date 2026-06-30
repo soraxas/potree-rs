@@ -216,7 +216,7 @@ impl PointCloud<PotreeUrlAsset> {
         PointCloud<PotreeUrlAsset>,
         PotreeHierarchyError<<PotreeUrlAsset as PotreeAsset>::Error>,
     > {
-        let hierarchy = Hierarchy::from_url(url)
+        let hierarchy = Hierarchy::try_from_url(url)
             .await
             .map_err(PotreeHierarchyError::Read)?;
         let octree = Octree::new();
