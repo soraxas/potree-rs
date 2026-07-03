@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use clap::Parser;
-use potree::convert::streaming::convert_ply_streaming;
+use potree::convert::streaming::{convert_ply_streaming, ConvertPlyOptions};
 
 /// Convert a PLY file into Potree format (octree.bin, hierarchy.bin, metadata.json)
 #[derive(Debug, Parser)]
@@ -33,10 +33,6 @@ struct Args {
     #[arg(long, default_value_t = 20)]
     max_depth: u32,
 
-    /// Optional RNG seed for reproducible sampling
-    #[arg(long)]
-    seed: Option<u64>,
-
     /// Output encoding: DEFAULT (raw AoS) or BROTLI (SoA + Brotli compression)
     #[arg(long, default_value = "BROTLI")]
     encoding: String,
@@ -47,8 +43,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let input = args.input;
     let output = args.output;
-
-    let scale_arr = [args.scale, args.scale, args.scale];
 
     let name = args.name.unwrap_or_else(|| {
         input
@@ -63,13 +57,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     convert_ply_streaming(
         &input,
         &output,
-        &name,
-        &args.projection.unwrap_or_default(),
-        scale_arr,
-        args.max_points_per_node,
-        args.max_depth,
-        args.seed,
-        &args.encoding,
+        &ConvertPlyOptions {
+            name,
+            projection: args.projection.unwrap_or_default(),
+            target_scale: [args.scale; 3],
+            max_points_per_node: args.max_points_per_node,
+            max_depth: args.max_depth,
+            encoding: args.encoding,
+        },
     )?;
 
     println!("Wrote Potree output to {}", output.display());

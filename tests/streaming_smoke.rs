@@ -1,5 +1,28 @@
 use byteorder::{BigEndian, LittleEndian, WriteBytesExt};
-use potree::convert::streaming::convert_ply_streaming;
+use potree::convert::streaming::{convert_ply_streaming, ConvertPlyOptions};
+/// Test shim over `convert_ply_streaming` with the shared defaults.
+fn convert(
+    input: &std::path::Path,
+    output: &std::path::Path,
+    name: &str,
+    max_points_per_node: usize,
+    max_depth: u32,
+    encoding: &str,
+) {
+    convert_ply_streaming(
+        input,
+        output,
+        &ConvertPlyOptions {
+            name: name.to_string(),
+            max_points_per_node,
+            max_depth,
+            encoding: encoding.to_string(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+}
+
 use std::fs;
 use std::io::Write;
 use tempfile::tempdir;
@@ -53,18 +76,7 @@ fn streaming_builds_hierarchy_and_offsets() {
     ];
     write_ascii_ply(&points, None, &input);
 
-    convert_ply_streaming(
-        &input,
-        &output,
-        "test",
-        "",
-        [0.001; 3],
-        2, // force splits
-        4, // allow depth
-        Some(42),
-        "DEFAULT",
-    )
-    .unwrap();
+    convert(&input, &output, "test", 2, 4, "DEFAULT");
 
     let hierarchy = fs::read(output.join("hierarchy.bin")).unwrap();
     // first node
@@ -115,18 +127,7 @@ fn extra_attributes_stored_in_metadata() {
     let classes = [1u8, 2, 3];
     write_ascii_ply_with_extras(&points, &intensities, &classes, &input);
 
-    convert_ply_streaming(
-        &input,
-        &output,
-        "extras_test",
-        "",
-        [0.001; 3],
-        10,
-        4,
-        Some(1),
-        "DEFAULT",
-    )
-    .unwrap();
+    convert(&input, &output, "extras_test", 10, 4, "DEFAULT");
 
     let meta: serde_json::Value =
         serde_json::from_slice(&fs::read(output.join("metadata.json")).unwrap()).unwrap();
@@ -154,6 +155,12 @@ fn extra_attributes_stored_in_metadata() {
     assert_eq!(class_attr["type"], "uint8");
     assert_eq!(class_attr["size"], 1);
 
+    // min/max reflect the observed data range, not the scalar type's range
+    assert_eq!(intensity_attr["min"][0], 100.0);
+    assert_eq!(intensity_attr["max"][0], 300.0);
+    assert_eq!(class_attr["min"][0], 1.0);
+    assert_eq!(class_attr["max"][0], 3.0);
+
     // record size = 12 (position) + 2 (intensity) + 1 (classification) = 15 bytes per point × 3 points
     let octree_size = fs::metadata(output.join("octree.bin")).unwrap().len();
     assert_eq!(
@@ -161,6 +168,46 @@ fn extra_attributes_stored_in_metadata() {
         15 * 3,
         "expected 15 bytes/point × 3 points in octree.bin"
     );
+}
+
+/// CloudCompare-style `scalar_<Name>` properties are normalized to canonical
+/// Potree attribute names so viewers recognize them.
+#[test]
+fn cloudcompare_scalar_names_are_normalized() {
+    let dir = tempdir().unwrap();
+    let input = dir.path().join("pts.ply");
+    let output = dir.path().join("out");
+    fs::create_dir_all(&output).unwrap();
+
+    let mut file = fs::File::create(&input).unwrap();
+    writeln!(file, "ply").unwrap();
+    writeln!(file, "format ascii 1.0").unwrap();
+    writeln!(file, "element vertex 2").unwrap();
+    writeln!(file, "property float x").unwrap();
+    writeln!(file, "property float y").unwrap();
+    writeln!(file, "property float z").unwrap();
+    writeln!(file, "property float scalar_Intensity").unwrap();
+    writeln!(file, "property float scalar_confidence").unwrap();
+    writeln!(file, "end_header").unwrap();
+    writeln!(file, "0 0 0 0.25 0.5").unwrap();
+    writeln!(file, "1 1 1 0.75 0.9").unwrap();
+    drop(file);
+
+    convert(&input, &output, "cc_test", 10, 4, "DEFAULT");
+
+    let meta: serde_json::Value =
+        serde_json::from_slice(&fs::read(output.join("metadata.json")).unwrap()).unwrap();
+    let attrs = meta["attributes"].as_array().unwrap();
+    let names: Vec<&str> = attrs.iter().map(|a| a["name"].as_str().unwrap()).collect();
+
+    // canonical Potree name; prefix stripped from unknown scalar fields
+    assert!(names.contains(&"intensity"), "attrs: {names:?}");
+    assert!(names.contains(&"confidence"), "attrs: {names:?}");
+
+    // observed range, not the [0,1] float placeholder
+    let intensity = attrs.iter().find(|a| a["name"] == "intensity").unwrap();
+    assert_eq!(intensity["min"][0], 0.25);
+    assert_eq!(intensity["max"][0], 0.75);
 }
 
 /// Write a binary big-endian PLY with 4 points.
@@ -195,7 +242,7 @@ fn binary_big_endian_ply_converts() {
     ];
     write_binary_be_ply(&points, &input);
 
-    convert_ply_streaming(&input, &output, "be_test", "", [0.001; 3], 10, 4, Some(1), "DEFAULT").unwrap();
+    convert(&input, &output, "be_test", 10, 4, "DEFAULT");
 
     // hierarchy.bin and octree.bin must exist with valid data
     let hierarchy = fs::read(output.join("hierarchy.bin")).unwrap();
@@ -239,8 +286,8 @@ fn big_endian_matches_little_endian_output() {
     fs::create_dir_all(&be_out).unwrap();
     fs::create_dir_all(&le_out).unwrap();
 
-    convert_ply_streaming(&be_input, &be_out, "be", "", [0.001; 3], 10, 4, Some(99), "DEFAULT").unwrap();
-    convert_ply_streaming(&le_input, &le_out, "le", "", [0.001; 3], 10, 4, Some(99), "DEFAULT").unwrap();
+    convert(&be_input, &be_out, "be", 10, 4, "DEFAULT");
+    convert(&le_input, &le_out, "le", 10, 4, "DEFAULT");
 
     let be_octree = fs::read(be_out.join("octree.bin")).unwrap();
     let le_octree = fs::read(le_out.join("octree.bin")).unwrap();

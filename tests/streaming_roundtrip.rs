@@ -9,7 +9,30 @@
 ///    tolerance of one of the original input positions, and each input appears
 ///    exactly once across all nodes.
 use byteorder::{ByteOrder, LittleEndian};
-use potree::convert::streaming::convert_ply_streaming;
+use potree::convert::streaming::{convert_ply_streaming, ConvertPlyOptions};
+/// Test shim over `convert_ply_streaming` with the shared defaults.
+fn convert(
+    input: &std::path::Path,
+    output: &std::path::Path,
+    name: &str,
+    max_points_per_node: usize,
+    max_depth: u32,
+    encoding: &str,
+) {
+    convert_ply_streaming(
+        input,
+        output,
+        &ConvertPlyOptions {
+            name: name.to_string(),
+            max_points_per_node,
+            max_depth,
+            encoding: encoding.to_string(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+}
+
 use potree::hierarchy::HierarchyAsync;
 use potree::octree::node::NodeType;
 use potree::point::AttributeType;
@@ -60,7 +83,7 @@ fn byte_offset_chain_is_contiguous() {
     fs::create_dir_all(&output).unwrap();
 
     write_ascii_ply(&corner_points(), &input);
-    convert_ply_streaming(&input, &output, "test", "", [0.001; 3], 2, 5, Some(42), "DEFAULT").unwrap();
+    convert(&input, &output, "test", 2, 5, "DEFAULT");
 
     let hierarchy_bytes = fs::read(output.join("hierarchy.bin")).unwrap();
     let octree_size = fs::metadata(output.join("octree.bin")).unwrap().len();
@@ -127,7 +150,7 @@ async fn roundtrip_positions_match_input() {
 
     let source = corner_points();
     write_ascii_ply(&source, &input);
-    convert_ply_streaming(&input, &output, "test", "", [0.001; 3], 2, 5, Some(42), "DEFAULT").unwrap();
+    convert(&input, &output, "test", 2, 5, "DEFAULT");
 
     // Load back through the Rust reader using the filesystem asset.
     let hierarchy = Hierarchy::from_path(&output)
@@ -218,7 +241,7 @@ async fn deep_tree_uses_hierarchy_chunking() {
     // 8 corner points, max 1 point per node → forces splits to depth 3–5
     let source = corner_points();
     write_ascii_ply(&source, &input);
-    convert_ply_streaming(&input, &output, "deep", "", [0.001; 3], 1, 8, Some(7), "DEFAULT").unwrap();
+    convert(&input, &output, "deep", 1, 8, "DEFAULT");
 
     let meta: serde_json::Value =
         serde_json::from_slice(&fs::read(output.join("metadata.json")).unwrap()).unwrap();
@@ -266,8 +289,7 @@ async fn brotli_encoding_roundtrip() {
 
     let source = corner_points();
     write_ascii_ply(&source, &input);
-    convert_ply_streaming(&input, &output, "brotli_test", "", [0.001; 3], 2, 5, Some(42), "BROTLI")
-        .unwrap();
+    convert(&input, &output, "brotli_test", 2, 5, "BROTLI");
 
     // Verify encoding field in metadata
     let meta: serde_json::Value =

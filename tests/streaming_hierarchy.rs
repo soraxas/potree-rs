@@ -1,5 +1,28 @@
 use byteorder::{ByteOrder, LittleEndian};
-use potree::convert::streaming::convert_ply_streaming;
+use potree::convert::streaming::{convert_ply_streaming, ConvertPlyOptions};
+/// Test shim over `convert_ply_streaming` with the shared defaults.
+fn convert(
+    input: &std::path::Path,
+    output: &std::path::Path,
+    name: &str,
+    max_points_per_node: usize,
+    max_depth: u32,
+    encoding: &str,
+) {
+    convert_ply_streaming(
+        input,
+        output,
+        &ConvertPlyOptions {
+            name: name.to_string(),
+            max_points_per_node,
+            max_depth,
+            encoding: encoding.to_string(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+}
+
 use serde::Deserialize;
 use std::fs;
 use std::io::Write;
@@ -67,18 +90,7 @@ fn streaming_creates_internal_payloads() {
         .collect();
     write_ascii_ply(&points, None, &input);
 
-    convert_ply_streaming(
-        &input,
-        &output,
-        "test",
-        "",
-        [0.001; 3],
-        1, // force splits (one point per leaf)
-        5, // allow depth
-        Some(7),
-        "DEFAULT",
-    )
-    .unwrap();
+    convert(&input, &output, "test", 1, 5, "DEFAULT");
 
     // Read hierarchy and metadata
     let hierarchy_bytes = fs::read(output.join("hierarchy.bin")).unwrap();

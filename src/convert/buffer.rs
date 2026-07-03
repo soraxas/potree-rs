@@ -137,18 +137,16 @@ impl PotreeBuilder {
             ));
         };
         let pointcloud_name = self.pointcloud_name.as_deref().unwrap_or("pointcloud");
-        let mut options = BuildOptions::default();
-        options.target_scale = self.target_scale.unwrap_or([0.001, 0.001, 0.001]);
-        if let Some(encoding) = self.encoding {
-            options.encoding = encoding;
-        }
-        if let Some(max_points) = self.max_points_per_node {
-            options.max_points_per_node = max_points;
-        }
-        if let Some(max_depth) = self.max_depth {
-            options.max_depth = max_depth;
-        }
-        options.seed = self.seed;
+        let defaults = BuildOptions::default();
+        let options = BuildOptions {
+            target_scale: self.target_scale.unwrap_or(defaults.target_scale),
+            encoding: self.encoding.unwrap_or(defaults.encoding),
+            max_points_per_node: self
+                .max_points_per_node
+                .unwrap_or(defaults.max_points_per_node),
+            max_depth: self.max_depth.unwrap_or(defaults.max_depth),
+            seed: self.seed,
+        };
 
         build_potree_buffers_with_options(
             pointcloud_name,
@@ -355,22 +353,43 @@ pub fn build_single_root_hierarchy(
 }
 
 #[cfg(feature = "convert")]
-pub fn write_metadata_json(
-    path: &Path,
-    name: &str,
-    projection: &str,
-    points: u64,
-    min: [f64; 3],
-    max: [f64; 3],
-    scale: [f64; 3],
-    offset: [f64; 3],
-    spacing: f64,
-    encoding: &str,
-    has_color: bool,
-    depth: u32,
-    hierarchy_bytes: usize,
-) -> Result<(), ConvertError> {
-    let content = build_metadata_json(
+pub fn write_metadata_json(path: &Path, params: &MetadataParams) -> Result<(), ConvertError> {
+    let content = build_metadata_json(params)?;
+
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let mut file = File::create(path)?;
+    file.write_all(&content)?;
+
+    Ok(())
+}
+
+/// Inputs for `build_metadata_json` / `write_metadata_json`.
+#[cfg(feature = "convert")]
+#[derive(Clone, Debug)]
+pub struct MetadataParams<'a> {
+    pub name: &'a str,
+    pub projection: &'a str,
+    pub points: u64,
+    /// Tight data bounds; the written `boundingBox` is cubed from these.
+    pub min: [f64; 3],
+    pub max: [f64; 3],
+    pub scale: [f64; 3],
+    pub offset: [f64; 3],
+    pub spacing: f64,
+    pub encoding: &'a str,
+    pub has_color: bool,
+    pub depth: u32,
+    pub hierarchy_bytes: usize,
+    pub step_size: u32,
+    pub extra_attrs: &'a [serde_json::Value],
+}
+
+#[cfg(feature = "convert")]
+pub fn build_metadata_json(params: &MetadataParams) -> Result<Vec<u8>, ConvertError> {
+    let MetadataParams {
         name,
         projection,
         points,
@@ -383,40 +402,17 @@ pub fn write_metadata_json(
         has_color,
         depth,
         hierarchy_bytes,
-        5, // legacy step_size for buffer-based builds
-        &[],
-    )?;
+        step_size,
+        extra_attrs,
+    } = *params;
 
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-
-    let mut file = File::create(path)?;
-    file.write_all(&content)?;
-
-    Ok(())
-}
-
-#[cfg(feature = "convert")]
-pub fn build_metadata_json(
-    name: &str,
-    projection: &str,
-    points: u64,
-    min: [f64; 3],
-    max: [f64; 3],
-    scale: [f64; 3],
-    offset: [f64; 3],
-    spacing: f64,
-    encoding: &str,
-    has_color: bool,
-    depth: u32,
-    hierarchy_bytes: usize,
-    step_size: u32,
-    extra_attrs: &[serde_json::Value],
-) -> Result<Vec<u8>, ConvertError> {
     // The root bounding box is cubed (reference converter convention) while the
-    // position attribute keeps the tight data range.
+    // position attribute keeps the data range, snapped to the quantization grid
+    // like the reference converter writes it.
     let cubed_max = cube_bounds(min, max);
+    let snap = |v: f64, s: f64| if s > 0.0 { (v / s).round() * s } else { v };
+    let attr_min: Vec<f64> = (0..3).map(|i| snap(min[i], scale[i])).collect();
+    let attr_max: Vec<f64> = (0..3).map(|i| snap(max[i], scale[i])).collect();
 
     let mut attributes = vec![json!({
         "name": "position",
@@ -425,8 +421,8 @@ pub fn build_metadata_json(
         "numElements": 3,
         "elementSize": 4,
         "type": "int32",
-        "min": [min[0], min[1], min[2]],
-        "max": [max[0], max[1], max[2]],
+        "min": attr_min,
+        "max": attr_max,
         "scale": [scale[0], scale[1], scale[2]],
         "offset": [offset[0], offset[1], offset[2]],
     })];
@@ -776,7 +772,7 @@ pub fn build_potree_buffers_with_options(
         hierarchy.write_u64::<LittleEndian>(node.byte_size)?;
     }
 
-    let metadata_json = build_metadata_json(
+    let metadata_json = build_metadata_json(&MetadataParams {
         name,
         projection,
         points,
@@ -785,13 +781,13 @@ pub fn build_potree_buffers_with_options(
         scale,
         offset,
         spacing,
-        &options.encoding,
-        colors.is_some(),
-        max_depth_seen,
-        hierarchy.len(),
-        5, // legacy step_size for buffer-based builds
-        &[],
-    )?;
+        encoding: &options.encoding,
+        has_color: colors.is_some(),
+        depth: max_depth_seen,
+        hierarchy_bytes: hierarchy.len(),
+        step_size: 5, // legacy step_size for buffer-based builds
+        extra_attrs: &[],
+    })?;
 
     Ok(PotreeBuffers {
         metadata_json,

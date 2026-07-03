@@ -1,10 +1,9 @@
 use crate::convert::buffer::{
     build_metadata_json, compute_scale_offset, cube_bounds, estimate_spacing, ConvertError,
-    HIERARCHY_BYTES_PER_NODE,
+    MetadataParams, HIERARCHY_BYTES_PER_NODE,
 };
 use byteorder::{BigEndian, ByteOrder, LittleEndian, ReadBytesExt, WriteBytesExt};
 use indicatif::{ProgressBar, ProgressStyle};
-use rand::{rngs::StdRng, SeedableRng};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
@@ -79,11 +78,28 @@ impl PlyScalar {
             PlyScalar::Float | PlyScalar::Double => [0.0, 1.0],
         }
     }
+    /// Decode one value from the little-endian record bytes extras are stored as.
+    fn decode_le(self, bytes: &[u8]) -> f64 {
+        match self {
+            PlyScalar::Char => bytes[0] as i8 as f64,
+            PlyScalar::UChar => bytes[0] as f64,
+            PlyScalar::Short => LittleEndian::read_i16(bytes) as f64,
+            PlyScalar::UShort => LittleEndian::read_u16(bytes) as f64,
+            PlyScalar::Int => LittleEndian::read_i32(bytes) as f64,
+            PlyScalar::UInt => LittleEndian::read_u32(bytes) as f64,
+            PlyScalar::Float => LittleEndian::read_f32(bytes) as f64,
+            PlyScalar::Double => LittleEndian::read_f64(bytes),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
 struct ExtraAttribute {
+    /// Normalized attribute name written to metadata (see `normalize_extra_name`).
     name: String,
+    /// Property name as it appears in the PLY header; used to match values
+    /// while reading points.
+    source_name: String,
     scalar: PlyScalar,
 }
 
@@ -91,9 +107,15 @@ impl ExtraAttribute {
     fn byte_size(&self) -> usize {
         self.scalar.byte_size()
     }
-    fn to_metadata_json(&self) -> serde_json::Value {
+    /// `observed_range` is the actual data min/max from the bounds pass; falls
+    /// back to the scalar type's full range when no finite values were seen.
+    fn to_metadata_json(&self, observed_range: [f64; 2]) -> serde_json::Value {
         let sz = self.byte_size();
-        let [vmin, vmax] = self.scalar.value_range();
+        let [vmin, vmax] = if observed_range[0].is_finite() && observed_range[1].is_finite() {
+            observed_range
+        } else {
+            self.scalar.value_range()
+        };
         serde_json::json!({
             "name": self.name,
             "description": "",
@@ -104,6 +126,37 @@ impl ExtraAttribute {
             "min": [vmin],
             "max": [vmax]
         })
+    }
+}
+
+/// Normalize a PLY extra-property name to the Potree attribute it represents.
+///
+/// CloudCompare exports scalar fields as `scalar_<Name>`; the Potree viewer
+/// looks attributes up by their canonical lowercase names (e.g. "intensity",
+/// "classification"). Strips the `scalar_` prefix and lowercases names that
+/// match a known Potree attribute; anything else keeps the stripped name.
+fn normalize_extra_name(raw: &str) -> String {
+    let stripped = if raw.len() > 7 && raw[..7].eq_ignore_ascii_case("scalar_") {
+        &raw[7..]
+    } else {
+        raw
+    };
+    const CANONICAL: &[&str] = &[
+        "intensity",
+        "classification",
+        "return number",
+        "number of returns",
+        "gps-time",
+        "point source id",
+        "user data",
+    ];
+    // PLY property names cannot contain spaces, so LAS-style names arrive with
+    // underscores (e.g. "return_number"); map them to the spaced canonical form.
+    let spaced = stripped.to_ascii_lowercase().replace('_', " ");
+    if CANONICAL.contains(&spaced.as_str()) {
+        spaced
+    } else {
+        stripped.to_string()
     }
 }
 
@@ -124,22 +177,50 @@ struct ParsedPoint {
     extra: Vec<u8>,
 }
 
+/// Options for [`convert_ply_streaming`].
+#[derive(Clone, Debug)]
+pub struct ConvertPlyOptions {
+    pub name: String,
+    pub projection: String,
+    pub target_scale: [f64; 3],
+    /// Split a node once its bucket exceeds this count. Matches the C++
+    /// PotreeConverter's `maxPointsPerNode` default.
+    pub max_points_per_node: usize,
+    pub max_depth: u32,
+    /// "DEFAULT" (raw AoS) or "BROTLI" (SoA + Brotli compression).
+    pub encoding: String,
+}
+
+impl Default for ConvertPlyOptions {
+    fn default() -> Self {
+        Self {
+            name: "pointcloud".to_string(),
+            projection: String::new(),
+            target_scale: [0.001; 3],
+            max_points_per_node: 10_000,
+            max_depth: 20,
+            encoding: "DEFAULT".to_string(),
+        }
+    }
+}
+
 pub fn convert_ply_streaming(
     input: &Path,
     output: &Path,
-    name: &str,
-    projection: &str,
-    target_scale: [f64; 3],
-    max_points_per_node: usize,
-    max_depth: u32,
-    seed: Option<u64>,
-    encoding: &str,
+    options: &ConvertPlyOptions,
 ) -> Result<(), ConvertError> {
+    let name = options.name.as_str();
+    let projection = options.projection.as_str();
+    let target_scale = options.target_scale;
+    let max_points_per_node = options.max_points_per_node;
+    let max_depth = options.max_depth;
+    let encoding = options.encoding.as_str();
+
     let header = parse_ply_header(input)?;
 
-    // Pass 1: bbox/spacings
+    // Pass 1: bbox/spacings + observed extra-attribute value ranges
     let pb_bounds = progress_bar(header.vertex_count as u64, "Scanning PLY");
-    let (min, data_max) = pass_compute_bounds(input, &header, Some(&pb_bounds))?;
+    let (min, data_max, extra_ranges) = pass_compute_bounds(input, &header, Some(&pb_bounds))?;
     pb_bounds.finish_and_clear();
     let total_points = header.vertex_count as u64;
     let (scale, offset) = compute_scale_offset(min, data_max, target_scale);
@@ -154,7 +235,6 @@ pub fn convert_ply_streaming(
     let record_size = 12 + if header.has_color { 6 } else { 0 } + extra_size;
 
     let mut nodes: Vec<Node> = Vec::new();
-    let mut rng = StdRng::seed_from_u64(seed.unwrap_or(1));
     let mut root_path = std::env::temp_dir();
     root_path.push(format!("potree_{run_id}_r.bin"));
     nodes.push(Node {
@@ -202,15 +282,7 @@ pub fn convert_ply_streaming(
     )?;
 
     // Bottom-up sampling for internal nodes
-    sample_tree(
-        &mut nodes,
-        record_size,
-        max_points_per_node,
-        scale,
-        offset,
-        spacing,
-        &mut rng,
-    )?;
+    sample_tree(&mut nodes, record_size, scale, offset, spacing)?;
 
     // Reorder to preorder for Potree
     let mut nodes = reorder_nodes_preorder(nodes);
@@ -261,24 +333,25 @@ pub fn convert_ply_streaming(
     let extra_attrs_json: Vec<serde_json::Value> = header
         .extra_attributes
         .iter()
-        .map(|a| a.to_metadata_json())
+        .zip(&extra_ranges)
+        .map(|(a, range)| a.to_metadata_json(*range))
         .collect();
-    let metadata = build_metadata_json(
+    let metadata = build_metadata_json(&MetadataParams {
         name,
         projection,
-        total_points,
+        points: total_points,
         min,
-        data_max,
+        max: data_max,
         scale,
         offset,
         spacing,
         encoding,
-        header.has_color,
-        max_level,
-        first_chunk_size,
-        HIERARCHY_STEP_SIZE,
-        &extra_attrs_json,
-    )?;
+        has_color: header.has_color,
+        depth: max_level,
+        hierarchy_bytes: first_chunk_size,
+        step_size: HIERARCHY_STEP_SIZE,
+        extra_attrs: &extra_attrs_json,
+    })?;
     fs::write(output.join("metadata.json"), metadata)?;
 
     // Quality summary
@@ -368,19 +441,30 @@ fn parse_ply_header(path: &Path) -> Result<PlyHeader, ConvertError> {
 
     let header_len = reader.stream_position()?;
 
-    let extra_attributes: Vec<ExtraAttribute> = properties
-        .iter()
-        .filter(|(name, _)| {
-            !matches!(
-                name.as_str(),
-                "x" | "y" | "z" | "red" | "green" | "blue" | "r" | "g" | "b"
-            )
-        })
-        .map(|(name, scalar)| ExtraAttribute {
-            name: name.clone(),
+    let mut extra_attributes: Vec<ExtraAttribute> = Vec::new();
+    for (name, scalar) in properties.iter().filter(|(name, _)| {
+        !matches!(
+            name.as_str(),
+            "x" | "y" | "z" | "red" | "green" | "blue" | "r" | "g" | "b"
+        )
+    }) {
+        let normalized = normalize_extra_name(name);
+        // Fall back to the original name if normalization would collide with
+        // another attribute.
+        let taken = |n: &str| {
+            n == "position" || n == "rgb" || extra_attributes.iter().any(|a| a.name == n)
+        };
+        let final_name = if taken(&normalized) {
+            name.clone()
+        } else {
+            normalized
+        };
+        extra_attributes.push(ExtraAttribute {
+            name: final_name,
+            source_name: name.clone(),
             scalar: *scalar,
-        })
-        .collect();
+        });
+    }
 
     Ok(PlyHeader {
         format,
@@ -398,25 +482,39 @@ fn open_after_header(path: &Path, header: &PlyHeader) -> Result<BufReader<File>,
     Ok(BufReader::new(file))
 }
 
+/// Returns the position bounds plus the observed `[min, max]` of every extra
+/// attribute (in `header.extra_attributes` order).
+#[expect(clippy::type_complexity, reason = "internal two-pass scan result")]
 fn pass_compute_bounds(
     path: &Path,
     header: &PlyHeader,
     progress: Option<&ProgressBar>,
-) -> Result<([f64; 3], [f64; 3]), ConvertError> {
+) -> Result<([f64; 3], [f64; 3], Vec<[f64; 2]>), ConvertError> {
     let mut reader = open_after_header(path, header)?;
     let mut min = [f64::INFINITY; 3];
     let mut max = [f64::NEG_INFINITY; 3];
+    let mut extra_ranges = vec![[f64::INFINITY, f64::NEG_INFINITY]; header.extra_attributes.len()];
     for _ in 0..header.vertex_count {
         let point = read_point(&mut reader, header)?;
         for i in 0..3 {
             min[i] = min[i].min(point.position[i]);
             max[i] = max[i].max(point.position[i]);
         }
+        let mut cursor = 0usize;
+        for (attr, range) in header.extra_attributes.iter().zip(&mut extra_ranges) {
+            let size = attr.byte_size();
+            let v = attr.scalar.decode_le(&point.extra[cursor..cursor + size]);
+            cursor += size;
+            if v.is_finite() {
+                range[0] = range[0].min(v);
+                range[1] = range[1].max(v);
+            }
+        }
         if let Some(pb) = progress {
             pb.inc(1);
         }
     }
-    Ok((min, max))
+    Ok((min, max, extra_ranges))
 }
 
 fn read_point<R: BufRead + Read>(
@@ -431,13 +529,11 @@ fn read_point<R: BufRead + Read>(
 }
 
 fn sample_tree(
-    nodes: &mut Vec<Node>,
+    nodes: &mut [Node],
     record_size: usize,
-    max_points_per_node: usize,
     scale: [f64; 3],
     offset: [f64; 3],
     base_spacing: f64,
-    _rng: &mut StdRng,
 ) -> Result<(), ConvertError> {
     // Build postorder traversal order (leaves first, root last).
     let mut order: Vec<usize> = Vec::new();
@@ -541,7 +637,7 @@ fn read_point_ascii<R: BufRead + Read>(
     let extra_names: HashSet<&str> = header
         .extra_attributes
         .iter()
-        .map(|a| a.name.as_str())
+        .map(|a| a.source_name.as_str())
         .collect();
     for (i, (name, ty)) in header.properties.iter().enumerate() {
         let val = parts[i];
@@ -605,7 +701,7 @@ fn read_point_binary<R: Read, BO: ByteOrder>(
     let extra_names: HashSet<&str> = header
         .extra_attributes
         .iter()
-        .map(|a| a.name.as_str())
+        .map(|a| a.source_name.as_str())
         .collect();
     for (name, ty) in &header.properties {
         let v = match ty {
@@ -774,7 +870,7 @@ fn split_tree(
     Ok(())
 }
 
-fn ensure_leaf_bucket(nodes: &mut Vec<Node>, idx: usize, run_id: u64) -> Result<(), ConvertError> {
+fn ensure_leaf_bucket(nodes: &mut [Node], idx: usize, run_id: u64) -> Result<(), ConvertError> {
     if nodes[idx].temp_path.is_none() {
         let mut p = std::env::temp_dir();
         p.push(format!("potree_{}_{}.bin", run_id, nodes[idx].name));
@@ -1052,7 +1148,7 @@ fn morton_code_from_record(record: &[u8]) -> u64 {
 }
 
 /// Sort the raw byte buffer of point records in-place by Morton code.
-fn sort_records_by_morton(data: &mut Vec<u8>, record_size: usize) {
+fn sort_records_by_morton(data: &mut [u8], record_size: usize) {
     if data.len() < record_size * 2 {
         return;
     }
@@ -1060,7 +1156,7 @@ fn sort_records_by_morton(data: &mut Vec<u8>, record_size: usize) {
     let mut indices: Vec<usize> = (0..n).collect();
     indices.sort_by_key(|&i| morton_code_from_record(&data[i * record_size..(i + 1) * record_size]));
     // Apply permutation using a temp buffer.
-    let orig = data.clone();
+    let orig = data.to_vec();
     for (new_i, &old_i) in indices.iter().enumerate() {
         data[new_i * record_size..(new_i + 1) * record_size]
             .copy_from_slice(&orig[old_i * record_size..(old_i + 1) * record_size]);
@@ -1326,6 +1422,19 @@ mod tests {
         assert_eq!(cube_bounds(min, max), [1.0, 1.0, 1.0]);
     }
 
+    #[test]
+    fn extra_names_normalize_cloudcompare_and_las_styles() {
+        assert_eq!(normalize_extra_name("scalar_Intensity"), "intensity");
+        assert_eq!(normalize_extra_name("Scalar_Classification"), "classification");
+        assert_eq!(normalize_extra_name("return_number"), "return number");
+        assert_eq!(normalize_extra_name("intensity"), "intensity");
+        // unknown fields: prefix stripped, original casing kept
+        assert_eq!(normalize_extra_name("scalar_confidence"), "confidence");
+        assert_eq!(normalize_extra_name("scalar_Original_cloud_index"), "Original_cloud_index");
+        // non-prefixed unknown names pass through untouched
+        assert_eq!(normalize_extra_name("nx"), "nx");
+    }
+
     fn pt(x: f64, y: f64, z: f64) -> ParsedPoint {
         ParsedPoint {
             position: [x, y, z],
@@ -1482,8 +1591,6 @@ mod tests {
 
     #[test]
     fn morton_sort_orders_by_z_curve() {
-        let scale = [1.0; 3];
-        let offset = [0.0; 3];
         // Build 3 records with i32 quantized positions (no color, record_size=12)
         let mut data = Vec::new();
         // Three points: [100,0,0], [0,0,0], [0,100,0] — after i32 shift to u32,
