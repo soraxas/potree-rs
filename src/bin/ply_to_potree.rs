@@ -24,8 +24,9 @@ struct Args {
     #[arg(long, default_value_t = 0.001)]
     scale: f64,
 
-    /// Maximum number of points to keep in each node (before splitting or sampling)
-    #[arg(long, default_value_t = 100_000)]
+    /// Maximum number of points to keep in each node (before splitting or sampling).
+    /// Default matches the C++ PotreeConverter's maxPointsPerNode.
+    #[arg(long, default_value_t = 10_000)]
     max_points_per_node: usize,
 
     /// Maximum octree depth

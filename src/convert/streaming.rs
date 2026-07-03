@@ -1,5 +1,5 @@
 use crate::convert::buffer::{
-    build_metadata_json, compute_scale_offset, estimate_spacing, ConvertError,
+    build_metadata_json, compute_scale_offset, cube_bounds, estimate_spacing, ConvertError,
     HIERARCHY_BYTES_PER_NODE,
 };
 use byteorder::{BigEndian, ByteOrder, LittleEndian, ReadBytesExt, WriteBytesExt};
@@ -139,11 +139,14 @@ pub fn convert_ply_streaming(
 
     // Pass 1: bbox/spacings
     let pb_bounds = progress_bar(header.vertex_count as u64, "Scanning PLY");
-    let (min, max) = pass_compute_bounds(input, &header, Some(&pb_bounds))?;
+    let (min, data_max) = pass_compute_bounds(input, &header, Some(&pb_bounds))?;
     pb_bounds.finish_and_clear();
     let total_points = header.vertex_count as u64;
-    let (scale, offset) = compute_scale_offset(min, max, target_scale);
-    let spacing = estimate_spacing(min, max, total_points);
+    let (scale, offset) = compute_scale_offset(min, data_max, target_scale);
+    let spacing = estimate_spacing(min, data_max, total_points);
+    // The octree subdivides a cube (reference converter convention); metadata
+    // still records the tight data range for the position attribute.
+    let max = cube_bounds(min, data_max);
 
     // Root node with temp bucket
     let run_id = rand::random::<u64>();
@@ -265,7 +268,7 @@ pub fn convert_ply_streaming(
         projection,
         total_points,
         min,
-        max,
+        data_max,
         scale,
         offset,
         spacing,
@@ -1308,6 +1311,20 @@ fn spinner(msg: &str) -> ProgressBar {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cube_bounds_expands_to_largest_extent() {
+        let min = [1.0, 2.0, 3.0];
+        let max = [21.0, 12.0, 8.0]; // extents 20, 10, 5
+        assert_eq!(cube_bounds(min, max), [21.0, 22.0, 23.0]);
+    }
+
+    #[test]
+    fn cube_bounds_is_noop_for_cubes() {
+        let min = [0.0, 0.0, 0.0];
+        let max = [1.0, 1.0, 1.0];
+        assert_eq!(cube_bounds(min, max), [1.0, 1.0, 1.0]);
+    }
 
     fn pt(x: f64, y: f64, z: f64) -> ParsedPoint {
         ParsedPoint {

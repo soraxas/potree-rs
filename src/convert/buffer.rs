@@ -199,6 +199,17 @@ pub fn compute_scale_offset(
     (scale, offset)
 }
 
+/// Expand `max` so the box becomes a cube anchored at `min`.
+///
+/// Matches the C++ PotreeConverter convention: the root bounding box is cubed
+/// to the largest extent so octree subdivision yields cubic nodes and the
+/// viewer's spacing/LOD assumptions hold.
+#[cfg(feature = "convert")]
+pub fn cube_bounds(min: [f64; 3], max: [f64; 3]) -> [f64; 3] {
+    let side = (0..3).map(|i| max[i] - min[i]).fold(0.0f64, f64::max);
+    [min[0] + side, min[1] + side, min[2] + side]
+}
+
 /// Estimate the spacing for the given minimum and maximum values.
 ///
 /// Matches the C++ PotreeConverter convention: `max_extent / 128`.
@@ -403,6 +414,10 @@ pub fn build_metadata_json(
     step_size: u32,
     extra_attrs: &[serde_json::Value],
 ) -> Result<Vec<u8>, ConvertError> {
+    // The root bounding box is cubed (reference converter convention) while the
+    // position attribute keeps the tight data range.
+    let cubed_max = cube_bounds(min, max);
+
     let mut attributes = vec![json!({
         "name": "position",
         "description": "",
@@ -447,7 +462,7 @@ pub fn build_metadata_json(
         "spacing": spacing,
         "boundingBox": {
             "min": [min[0], min[1], min[2]],
-            "max": [max[0], max[1], max[2]]
+            "max": [cubed_max[0], cubed_max[1], cubed_max[2]]
         },
         "encoding": encoding,
         "attributes": attributes
@@ -640,6 +655,9 @@ pub fn build_potree_buffers_with_options(
     let (scale, offset) = compute_scale_offset(min, max, options.target_scale);
     let points = positions.len() as u64;
     let spacing = estimate_spacing(min, max, points);
+    // Octree nodes subdivide a cube (reference converter convention); `max`
+    // stays the tight data range for the metadata position attribute.
+    let cubed_max = cube_bounds(min, max);
 
     let mut rng = options
         .seed
@@ -651,7 +669,7 @@ pub fn build_potree_buffers_with_options(
         name: "r".to_string(),
         level: 0,
         min,
-        max,
+        max: cubed_max,
         points: (0..positions.len()).collect(),
         stored_points: Vec::new(),
         children: [None; 8],

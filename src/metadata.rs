@@ -172,7 +172,11 @@ impl Metadata {
     ) -> Result<Points, LoadPointsError> {
         let points = match self.encoding.as_str() {
             "BROTLI" => self.parse_points_brotli(num_points, bounding_box, buffer)?,
-            "DEFAULT" => self.parse_points_default(num_points, bounding_box, buffer)?,
+            // PotreeConverter writes "DEFAULT" by default but also accepts and
+            // emits "UNCOMPRESSED"; the Potree viewer treats both identically.
+            "DEFAULT" | "UNCOMPRESSED" => {
+                self.parse_points_default(num_points, bounding_box, buffer)?
+            }
             _ => {
                 return Err(LoadPointsError::EncodingUnimplemented(
                     self.encoding.clone(),
