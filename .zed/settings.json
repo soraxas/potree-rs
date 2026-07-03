@@ -1,0 +1,28 @@
+// Folder-specific settings
+//
+// For a full list of overridable settings, and general information on folder-specific settings,
+// see the documentation: https://zed.dev/docs/configuring-zed#settings-files
+{
+  "lsp": {
+    "rust-analyzer": {
+      "initialization_options": {
+        "cargo": {
+          "features": [
+            "fs",
+            "ehttp",
+            "slab",
+            "blocking_fs",
+            "blocking_reqwest",
+            "tokio_dev",
+          ],
+        },
+        "check": {
+          "command": "clippy", // rust-analyzer.check.command (default: "check")
+        },
+        "rustfmt": {
+          "extraArgs": ["+nightly"],
+        },
+      },
+    },
+  },
+}

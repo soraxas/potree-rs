@@ -12,6 +12,7 @@ use byteorder::{ByteOrder, LittleEndian};
 use potree::convert::streaming::convert_ply_streaming;
 use potree::hierarchy::HierarchyAsync;
 use potree::octree::node::NodeType;
+use potree::point::AttributeType;
 use potree::prelude::*;
 use std::collections::HashSet;
 use std::fs;
@@ -153,8 +154,11 @@ async fn roundtrip_positions_match_input() {
             .load_points(node)
             .await
             .expect("failed to load points for node");
-        for p in &points.points {
-            all_decoded.push([p.position.x, p.position.y, p.position.z]);
+        for p in points.buffer.iter() {
+            let pos = p
+                .attribute_type(AttributeType::Position)
+                .expect("node points missing position attribute");
+            all_decoded.push([pos[0] as f64, pos[1] as f64, pos[2] as f64]);
         }
     }
 
@@ -244,7 +248,7 @@ async fn deep_tree_uses_hierarchy_chunking() {
             continue;
         }
         let pts = hierarchy.load_points(node).await.unwrap();
-        decoded_count += pts.points.len();
+        decoded_count += pts.buffer.count;
     }
     assert_eq!(decoded_count, source.len(), "should recover all {}", source.len());
 }
@@ -287,8 +291,11 @@ async fn brotli_encoding_roundtrip() {
             continue;
         }
         let pts = hierarchy.load_points(node).await.unwrap();
-        for p in &pts.points {
-            all_decoded.push([p.position.x, p.position.y, p.position.z]);
+        for p in pts.buffer.iter() {
+            let pos = p
+                .attribute_type(AttributeType::Position)
+                .expect("node points missing position attribute");
+            all_decoded.push([pos[0] as f64, pos[1] as f64, pos[2] as f64]);
         }
     }
 

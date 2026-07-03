@@ -38,7 +38,7 @@ pub fn main() {
             .await
             .expect("Unable to load points");
 
-        tracing::info!("Loaded {} points", points.points.len());
+        tracing::info!("Loaded {} points", points.buffer.count);
 
         point_cloud
             .load_entire_hierarchy()

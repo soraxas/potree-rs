@@ -12,7 +12,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error + 'static>> {
     let potree_asset = BlockingPotreeFsAsset::from_path(path);
 
     tracing::info!("Load pointcloud from local filesystem path {}", path);
-    let hierarchy = Hierarchy::new_blocking(potree_asset)?;
+    let hierarchy = Hierarchy::load_blocking(potree_asset)?;
 
     let nodes = hierarchy
         .load_initial_hierarchy()
@@ -30,7 +30,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error + 'static>> {
                 Ok(points) => {
                     tracing::info!(
                         "Loaded {} points for node {}",
-                        points.points.len(),
+                        points.buffer.count,
                         node.name
                     );
                 }

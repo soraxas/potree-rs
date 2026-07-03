@@ -9,7 +9,7 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error + 'static>> {
     let asset = PotreeHttpAsset::from_url(url);
 
     tracing::info!("Load pointcloud from url {}", url);
-    let hierarchy = Hierarchy::new(asset)
+    let hierarchy = Hierarchy::load(asset)
         .await
         .expect("Unable to load point cloud");
 
@@ -28,7 +28,7 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error + 'static>> {
         .expect("Unable to load points");
     tracing::info!(
         "Successfuly loaded {} points for the root node",
-        points.points.len()
+        points.buffer.count
     );
 
     Ok(())

@@ -1,13 +1,13 @@
-use glam::DVec3;
+use glam::Vec3;
 
 #[derive(Clone, Debug, Default)]
 pub struct Aabb {
-    pub min: DVec3,
-    pub max: DVec3,
+    pub min: Vec3,
+    pub max: Vec3,
 }
 
 impl Aabb {
-    pub fn new(min: DVec3, max: DVec3) -> Self {
+    pub fn new(min: Vec3, max: Vec3) -> Self {
         Self { min, max }
     }
 }

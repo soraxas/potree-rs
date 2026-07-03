@@ -35,7 +35,7 @@ pub async fn main() {
 
     tracing::info!(
         "Loaded {} points with occupancy {}",
-        points.points.len(),
+        points.buffer.count,
         points.density
     );
 }
