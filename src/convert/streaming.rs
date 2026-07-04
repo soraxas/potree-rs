@@ -279,13 +279,12 @@ pub fn convert_ply_streaming(
             max_depth,
             scale,
             offset,
-            base_spacing: spacing,
             run_id,
         },
     )?;
 
     // Bottom-up sampling for internal nodes
-    sample_tree(&mut nodes, record_size, scale, offset, spacing)?;
+    sample_tree(&mut nodes, record_size, max_points_per_node, scale, offset, spacing)?;
 
     // Drop nodes that ended up empty (e.g. leaves whose entire payload was
     // sampled into an ancestor) — the reference viewer only warns on
@@ -538,10 +537,17 @@ fn read_point<R: BufRead + Read>(
 fn sample_tree(
     nodes: &mut [Node],
     record_size: usize,
+    max_points_per_node: usize,
     scale: [f64; 3],
     offset: [f64; 3],
     base_spacing: f64,
 ) -> Result<(), ConvertError> {
+    // Below the quantization grid the Poisson test is vacuous (no two distinct
+    // stored points can be closer than one scale unit), so an uncapped sample
+    // would vacuum the entire child payload and leave empty descendants.
+    // Capacity-bound those levels instead; levels with real rejection keep the
+    // natural (reference-matching) Poisson yield.
+    let min_spacing = scale.iter().cloned().fold(0.0f64, f64::max);
     // Build postorder traversal order (leaves first, root last).
     let mut order: Vec<usize> = Vec::new();
     let mut stack = vec![0usize];
@@ -594,7 +600,31 @@ fn sample_tree(
         }
 
         // Determine which points are accepted into this node's LOD payload.
-        let flags = poisson_accept(&all_positions, spacing, center);
+        let cap = if spacing >= min_spacing {
+            usize::MAX
+        } else {
+            max_points_per_node
+        };
+        let mut flags = poisson_accept(&all_positions, spacing, center, cap);
+
+        // Never fully drain a child that has children of its own: an internal
+        // node with num_points=0 can't be pruned (its subtree still holds
+        // points) and would be emitted as an empty byte_size=0 record. Flip
+        // one accepted record back to keep such children non-empty.
+        for (ci, &child_idx) in child_indices.iter().enumerate() {
+            if nodes[child_idx].child_mask == 0 {
+                continue;
+            }
+            let child_flag_idxs: Vec<usize> = record_tags
+                .iter()
+                .enumerate()
+                .filter(|(_, t)| t.0 == ci)
+                .map(|(i, _)| i)
+                .collect();
+            if !child_flag_idxs.is_empty() && child_flag_idxs.iter().all(|&i| flags[i]) {
+                flags[*child_flag_idxs.last().unwrap()] = false;
+            }
+        }
 
         // Partition: accepted → this node's sample_data; rejected → back to child.
         let mut sample_data: Vec<u8> = Vec::new();
@@ -769,7 +799,6 @@ struct SplitConfig {
     max_depth: u32,
     scale: [f64; 3],
     offset: [f64; 3],
-    base_spacing: f64,
     run_id: u64,
 }
 
@@ -780,26 +809,16 @@ fn split_tree(nodes: &mut Vec<Node>, cfg: &SplitConfig) -> Result<(), ConvertErr
         max_depth,
         scale,
         offset,
-        base_spacing,
         run_id,
     } = *cfg;
     let pb = spinner("Splitting tree");
     let mut queue: VecDeque<usize> = VecDeque::new();
     queue.push_back(0);
 
-    // Never subdivide below the quantization grid: once a level's Poisson
-    // spacing drops under the coordinate resolution, sampling can no longer
-    // distinguish points and parents would vacuum entire child payloads,
-    // leaving empty (byte_size=0) nodes behind. The reference viewer tolerates
-    // those but warns; better to not create such levels at all.
-    let min_spacing = scale.iter().cloned().fold(0.0f64, f64::max);
-
     while let Some(idx) = queue.pop_front() {
         pb.set_message(format!("Splitting tree  {} nodes", nodes.len()));
-        let child_spacing = base_spacing / 2f64.powi(nodes[idx].level as i32 + 1);
         if nodes[idx].num_points as usize <= max_points_per_node
             || nodes[idx].level >= max_depth
-            || child_spacing < min_spacing
         {
             continue;
         }
@@ -812,7 +831,6 @@ fn split_tree(nodes: &mut Vec<Node>, cfg: &SplitConfig) -> Result<(), ConvertErr
             let mut f = File::open(&path)?;
             let mut buf = Vec::new();
             f.read_to_end(&mut buf)?;
-            fs::remove_file(path)?;
 
             let center = [
                 (node_min[0] + node_max[0]) * 0.5,
@@ -842,6 +860,16 @@ fn split_tree(nodes: &mut Vec<Node>, cfg: &SplitConfig) -> Result<(), ConvertErr
                 child_bufs[child as usize].extend_from_slice(record);
             }
             drop(buf);
+
+            // Futility check: if every point lands in a single octant
+            // (typically duplicate-heavy data sharing one quantized position),
+            // subdividing can never reduce the bucket — keep this node a leaf.
+            let non_empty_octants = child_bufs.iter().filter(|b| !b.is_empty()).count();
+            if non_empty_octants <= 1 {
+                nodes[idx].temp_path = Some(path);
+                continue;
+            }
+            fs::remove_file(path)?;
 
             for child in 0u8..8 {
                 let records = &child_bufs[child as usize];
@@ -975,7 +1003,12 @@ fn write_rejected_to_node(node: &mut Node, rejected: Vec<Vec<u8>>) -> Result<(),
 ///   - Early-exit when an accepted point's center-dist² < `(cd - spacing)²`
 ///     (no earlier accepted point can be within `spacing` of the candidate).
 ///   - Hard cap of 10 000 backward-scan steps per candidate.
-fn poisson_accept(positions: &[[f64; 3]], spacing: f64, center: [f64; 3]) -> Vec<bool> {
+fn poisson_accept(
+    positions: &[[f64; 3]],
+    spacing: f64,
+    center: [f64; 3],
+    cap: usize,
+) -> Vec<bool> {
     if positions.is_empty() {
         return Vec::new();
     }
@@ -997,6 +1030,9 @@ fn poisson_accept(positions: &[[f64; 3]], spacing: f64, center: [f64; 3]) -> Vec
     let mut flags = vec![false; positions.len()];
 
     'outer: for (orig_idx, _) in &order {
+        if accepted_positions.len() >= cap {
+            break;
+        }
         let pos = positions[*orig_idx];
         let cx = pos[0] - center[0];
         let cy = pos[1] - center[1];
@@ -1055,7 +1091,7 @@ fn poisson_sample(
         (node_min[2] + node_max[2]) * 0.5,
     ];
     let positions: Vec<[f64; 3]> = points.iter().map(|p| p.position).collect();
-    let flags = poisson_accept(&positions, spacing, center);
+    let flags = poisson_accept(&positions, spacing, center, usize::MAX);
 
     let mut out = Vec::new();
     for (p, &accepted) in points.iter().zip(flags.iter()) {
@@ -1508,14 +1544,14 @@ mod tests {
 
     #[test]
     fn poisson_accept_empty() {
-        let flags = poisson_accept(&[], 1.0, [0.0; 3]);
+        let flags = poisson_accept(&[], 1.0, [0.0; 3], usize::MAX);
         assert!(flags.is_empty());
     }
 
     #[test]
     fn poisson_accept_flags_count_matches_input() {
         let positions = vec![[0.0f64; 3], [10.0, 0.0, 0.0], [20.0, 0.0, 0.0]];
-        let flags = poisson_accept(&positions, 1.0, [10.0, 0.0, 0.0]);
+        let flags = poisson_accept(&positions, 1.0, [10.0, 0.0, 0.0], usize::MAX);
         assert_eq!(flags.len(), 3);
     }
 
@@ -1525,7 +1561,7 @@ mod tests {
         // Center [5,5,5], points at x=8.0 (cd=3) and x=8.3 (cd=3.3), spacing=0.5.
         // [8.0] (cd=3) → accepted first; [8.3] too close → rejected.
         let positions = vec![[8.3f64, 5.0, 5.0], [8.0, 5.0, 5.0]]; // note: 8.3 is index 0
-        let flags = poisson_accept(&positions, 0.5, [5.0, 5.0, 5.0]);
+        let flags = poisson_accept(&positions, 0.5, [5.0, 5.0, 5.0], usize::MAX);
         assert_eq!(flags.len(), 2);
         assert!(!flags[0], "[8.3] (farther from center) should be rejected");
         assert!(flags[1], "[8.0] (closer to center) should be accepted");

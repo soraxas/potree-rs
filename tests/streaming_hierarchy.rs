@@ -124,6 +124,11 @@ fn streaming_creates_internal_payloads() {
     let mut total_node_sum = 0u64;
     let mut internal_payload = 0u64;
     for record in &records {
+        if record.0 == 2 {
+            // proxy records duplicate their real node's num_points in the
+            // next hierarchy chunk — don't double count
+            continue;
+        }
         total_node_sum += record.2 as u64;
         if record.0 == 0 {
             internal_payload += record.3;
@@ -139,8 +144,9 @@ fn streaming_creates_internal_payloads() {
         "internal nodes should have sampled payload bytes"
     );
 
-    // octree.bin size should equal sum of byte_size across nodes
+    // octree.bin size should equal sum of byte_size across real nodes
+    // (proxy records carry hierarchy-chunk sizes, not octree bytes)
     let octree_size = fs::metadata(output.join("octree.bin")).unwrap().len();
-    let sum_sizes: u64 = records.iter().map(|r| r.3).sum();
+    let sum_sizes: u64 = records.iter().filter(|r| r.0 != 2).map(|r| r.3).sum();
     assert_eq!(octree_size, sum_sizes);
 }
