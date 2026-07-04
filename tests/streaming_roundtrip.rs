@@ -238,10 +238,13 @@ async fn deep_tree_uses_hierarchy_chunking() {
     let output = dir.path().join("out");
     fs::create_dir_all(&output).unwrap();
 
-    // 8 corner points, max 1 point per node → forces splits to depth 3–5
-    let source = corner_points();
+    // 3000 points 1 mm apart along a 3 m line: pitch is finer than the
+    // Poisson spacing down to level 4 (3/(128·2⁴) ≈ 1.5 mm), so a real
+    // depth-4 tree survives sampling, while the resolution guard stops
+    // deeper levels (spacing at level 5 would fall below the 1 mm scale).
+    let source: Vec<[f64; 3]> = (0..3000).map(|i| [i as f64 * 0.001, 0.0, 0.0]).collect();
     write_ascii_ply(&source, &input);
-    convert(&input, &output, "deep", 1, 8, "DEFAULT");
+    convert(&input, &output, "deep", 5, 8, "DEFAULT");
 
     let meta: serde_json::Value =
         serde_json::from_slice(&fs::read(output.join("metadata.json")).unwrap()).unwrap();
@@ -251,9 +254,11 @@ async fn deep_tree_uses_hierarchy_chunking() {
 
     let hierarchy_bytes = fs::read(output.join("hierarchy.bin")).unwrap();
 
-    // If the tree depth exceeded HIERARCHY_STEP_SIZE, we expect chunking.
+    // The line data is engineered to reach depth 4, exceeding
+    // HIERARCHY_STEP_SIZE, so chunking must kick in.
     let max_depth = meta["hierarchy"]["depth"].as_u64().unwrap();
-    if max_depth >= 4 {
+    assert!(max_depth >= 4, "expected depth >= 4, got {max_depth}");
+    {
         assert!(
             first_chunk_size < hierarchy_bytes.len(),
             "deep tree (depth={max_depth}) should produce sub-chunks: \
@@ -361,4 +366,47 @@ async fn brotli_encoding_roundtrip() {
         matched.len(),
         source.len()
     );
+}
+
+// ── no empty nodes ────────────────────────────────────────────────────────────
+
+/// Dense, duplicate-heavy data (the profile of real scanner exports) used to
+/// produce whole levels of `num_points=0 / byte_size=0` nodes: levels whose
+/// Poisson spacing fell below the quantization grid let parents vacuum their
+/// children's entire payloads. The reference viewer only warns on such nodes;
+/// clean output must not contain them at all.
+#[test]
+fn output_contains_no_empty_nodes() {
+    let dir = tempdir().unwrap();
+    let input = dir.path().join("dense.ply");
+    let output = dir.path().join("out");
+    fs::create_dir_all(&output).unwrap();
+
+    // 3 m line at 1 mm pitch, every point written 3× (duplicates after
+    // quantization), forcing deep splits capped by the resolution guard.
+    let mut source: Vec<[f64; 3]> = Vec::new();
+    for i in 0..3000 {
+        for _ in 0..3 {
+            source.push([i as f64 * 0.001, 0.0, 0.0]);
+        }
+    }
+    write_ascii_ply(&source, &input);
+    convert(&input, &output, "dense", 50, 20, "DEFAULT");
+
+    let hierarchy = fs::read(output.join("hierarchy.bin")).unwrap();
+    let mut total_points = 0u64;
+    for rec in hierarchy.chunks_exact(22) {
+        let node_type = rec[0];
+        let num_points = LittleEndian::read_u32(&rec[2..6]);
+        let byte_size = LittleEndian::read_u64(&rec[14..22]);
+        if node_type != 2 {
+            assert!(
+                num_points > 0 && byte_size > 0,
+                "real node with empty payload: type={node_type} \
+                 num_points={num_points} byte_size={byte_size}"
+            );
+            total_points += num_points as u64;
+        }
+    }
+    assert_eq!(total_points, source.len() as u64, "all points accounted for");
 }

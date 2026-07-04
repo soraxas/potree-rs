@@ -84,10 +84,11 @@ fn streaming_creates_internal_payloads() {
     let output = dir.path().join("out");
     fs::create_dir_all(&output).unwrap();
 
-    // 16 points in a 2x2x4 layout to force splits
-    let points: Vec<[f64; 3]> = (0..2)
-        .flat_map(|x| (0..2).flat_map(move |y| (0..4).map(move |z| [x as f64, y as f64, z as f64])))
-        .collect();
+    // 300 points 2 mm apart along a 0.6 m line: denser than the root Poisson
+    // spacing (0.6/128 ≈ 4.7 mm), so the root sample rejects neighbours and
+    // children keep real payloads (a sparse cloud would be fully absorbed
+    // into the root and the tree pruned to a single node).
+    let points: Vec<[f64; 3]> = (0..300).map(|i| [i as f64 * 0.002, 0.0, 0.0]).collect();
     write_ascii_ply(&points, None, &input);
 
     convert(&input, &output, "test", 1, 5, "DEFAULT");

@@ -273,16 +273,24 @@ pub fn convert_ply_streaming(
     // Build adaptive tree by splitting buckets
     split_tree(
         &mut nodes,
-        record_size,
-        max_points_per_node,
-        max_depth,
-        scale,
-        offset,
-        run_id,
+        &SplitConfig {
+            record_size,
+            max_points_per_node,
+            max_depth,
+            scale,
+            offset,
+            base_spacing: spacing,
+            run_id,
+        },
     )?;
 
     // Bottom-up sampling for internal nodes
     sample_tree(&mut nodes, record_size, scale, offset, spacing)?;
+
+    // Drop nodes that ended up empty (e.g. leaves whose entire payload was
+    // sampled into an ancestor) — the reference viewer only warns on
+    // byte_size=0 nodes, but clean output shouldn't contain them.
+    prune_empty_nodes(&mut nodes);
 
     // Reorder to preorder for Potree
     let mut nodes = reorder_nodes_preorder(nodes);
@@ -293,16 +301,15 @@ pub fn convert_ply_streaming(
     let pb_write = progress_bar(nodes.len() as u64, "Writing octree ");
     for node in &mut nodes {
         pb_write.inc(1);
-        let raw: Vec<u8> = if node.child_mask == 0 {
-            if let Some(path) = &node.temp_path {
-                let mut f = File::open(path)?;
-                let mut data = Vec::new();
-                f.read_to_end(&mut data)?;
-                let _ = fs::remove_file(path);
-                data
-            } else {
-                Vec::new()
-            }
+        // Leaves carry their bucket in a temp file, internal nodes carry their
+        // LOD sample in memory. An internal node pruned down to a leaf (all
+        // children were empty) still holds its payload in `sample_data`.
+        let raw: Vec<u8> = if let Some(path) = &node.temp_path {
+            let mut f = File::open(path)?;
+            let mut data = Vec::new();
+            f.read_to_end(&mut data)?;
+            let _ = fs::remove_file(path);
+            data
         } else {
             std::mem::take(&mut node.sample_data)
         };
@@ -756,51 +763,49 @@ fn read_point_binary<R: Read, BO: ByteOrder>(
     })
 }
 
-fn split_tree(
-    nodes: &mut Vec<Node>,
+struct SplitConfig {
     record_size: usize,
     max_points_per_node: usize,
     max_depth: u32,
     scale: [f64; 3],
     offset: [f64; 3],
+    base_spacing: f64,
     run_id: u64,
-) -> Result<(), ConvertError> {
+}
+
+fn split_tree(nodes: &mut Vec<Node>, cfg: &SplitConfig) -> Result<(), ConvertError> {
+    let SplitConfig {
+        record_size,
+        max_points_per_node,
+        max_depth,
+        scale,
+        offset,
+        base_spacing,
+        run_id,
+    } = *cfg;
     let pb = spinner("Splitting tree");
     let mut queue: VecDeque<usize> = VecDeque::new();
     queue.push_back(0);
 
+    // Never subdivide below the quantization grid: once a level's Poisson
+    // spacing drops under the coordinate resolution, sampling can no longer
+    // distinguish points and parents would vacuum entire child payloads,
+    // leaving empty (byte_size=0) nodes behind. The reference viewer tolerates
+    // those but warns; better to not create such levels at all.
+    let min_spacing = scale.iter().cloned().fold(0.0f64, f64::max);
+
     while let Some(idx) = queue.pop_front() {
         pb.set_message(format!("Splitting tree  {} nodes", nodes.len()));
-        if nodes[idx].num_points as usize <= max_points_per_node || nodes[idx].level >= max_depth {
+        let child_spacing = base_spacing / 2f64.powi(nodes[idx].level as i32 + 1);
+        if nodes[idx].num_points as usize <= max_points_per_node
+            || nodes[idx].level >= max_depth
+            || child_spacing < min_spacing
+        {
             continue;
         }
 
         let node_min = nodes[idx].min;
         let node_max = nodes[idx].max;
-
-        // ensure children
-        for child in 0u8..8 {
-            let child_idx = child as usize;
-            if nodes[idx].children[child_idx].is_none() {
-                let (cmin, cmax) = child_bounds(node_min, node_max, child);
-                let new_idx = nodes.len();
-                nodes.push(Node {
-                    name: format!("{}{}", nodes[idx].name, child),
-                    level: nodes[idx].level + 1,
-                    min: cmin,
-                    max: cmax,
-                    children: [None; 8],
-                    child_mask: 0,
-                    num_points: 0,
-                    byte_offset: 0,
-                    byte_size: 0,
-                    temp_path: None,
-                    sample_data: Vec::new(),
-                });
-                nodes[idx].children[child_idx] = Some(new_idx);
-                nodes[idx].child_mask |= 1 << child;
-            }
-        }
 
         // redistribute this node's payload to children
         if let Some(path) = nodes[idx].temp_path.take() {
@@ -843,7 +848,31 @@ fn split_tree(
                 if records.is_empty() {
                     continue;
                 }
-                let child_idx = nodes[idx].children[child as usize].unwrap();
+                // Create children lazily: only octants that actually receive
+                // points exist in the hierarchy (no empty-leaf records).
+                let child_idx = match nodes[idx].children[child as usize] {
+                    Some(ci) => ci,
+                    None => {
+                        let (cmin, cmax) = child_bounds(node_min, node_max, child);
+                        let new_idx = nodes.len();
+                        nodes.push(Node {
+                            name: format!("{}{}", nodes[idx].name, child),
+                            level: nodes[idx].level + 1,
+                            min: cmin,
+                            max: cmax,
+                            children: [None; 8],
+                            child_mask: 0,
+                            num_points: 0,
+                            byte_offset: 0,
+                            byte_size: 0,
+                            temp_path: None,
+                            sample_data: Vec::new(),
+                        });
+                        nodes[idx].children[child as usize] = Some(new_idx);
+                        nodes[idx].child_mask |= 1 << child;
+                        new_idx
+                    }
+                };
                 ensure_leaf_bucket(nodes, child_idx, run_id)?;
                 let child_path = nodes[child_idx].temp_path.as_ref().unwrap();
                 let mut cf = fs::OpenOptions::new()
@@ -1074,6 +1103,29 @@ fn child_bounds(min: [f64; 3], max: [f64; 3], index: u8) -> ([f64; 3], [f64; 3])
     (child_min, child_max)
 }
 
+/// Drop empty nodes from the tree: a node is kept only if it has points or a
+/// kept descendant (the root is always kept). Parents' child links/masks are
+/// updated. Relies on children having larger indices than their parent (true
+/// for `split_tree`, which pushes children after the parent).
+fn prune_empty_nodes(nodes: &mut [Node]) {
+    let mut keep = vec![false; nodes.len()];
+    for idx in (0..nodes.len()).rev() {
+        let mut any_kept_child = false;
+        for c in 0..8 {
+            if let Some(ci) = nodes[idx].children[c] {
+                debug_assert!(ci > idx, "child index must be larger than parent");
+                if keep[ci] {
+                    any_kept_child = true;
+                } else {
+                    nodes[idx].children[c] = None;
+                    nodes[idx].child_mask &= !(1 << c);
+                }
+            }
+        }
+        keep[idx] = idx == 0 || nodes[idx].num_points > 0 || any_kept_child;
+    }
+}
+
 fn reorder_nodes_preorder(nodes: Vec<Node>) -> Vec<Node> {
     let mut new_nodes = Vec::with_capacity(nodes.len());
     let mut mapping = vec![usize::MAX; nodes.len()];
@@ -1096,9 +1148,12 @@ fn reorder_nodes_preorder(nodes: Vec<Node>) -> Vec<Node> {
         }
     }
 
-    // remap children/masks
+    // remap children/masks (skip nodes unreachable from the root, e.g. pruned)
     for old_idx in 0..nodes.len() {
         let new_idx = mapping[old_idx];
+        if new_idx == usize::MAX {
+            continue;
+        }
         let mut new_children = [None; 8];
         let mut mask = 0u8;
         for (i, child) in nodes[old_idx].children.iter().enumerate() {
